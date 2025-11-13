@@ -1,0 +1,100 @@
+pragma cashscript ^0.12.0;
+
+// PayInterest loan contract function
+// Is used by the Collector contract to trigger interest payments on loans
+// Calculates how much interest (BCH) loans pays based on the set interest rate (and if needed, the number of elapsed periods)
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x07
+*/
+
+// Note: This function can only be called if there are no ongoing redemptions against the loan and if the loan debt is non-zero
+
+contract payInterest(
+  bytes32 stabilityPoolTokenId
+  ) {
+      // function payInterest
+      // Calculates how much interest (BCH) user must pay to Collector based on the number of elapsed loan periods.
+      // Loan collateral pays for the transaction fees (normally no external fee input required).
+      //
+      // Inputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-payInterest, 04-collector, ?05-feeBch
+      // Outputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-payInterest, 04-collector, ?05-changeBch
+
+    function payInterest(){
+      // require function to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+
+      // Authenticate PriceContract at inputIndex 0
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+      // Authenticate Loan at inputIndex 1, nftCommitment checked below
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+
+      // Parse loan state
+      // Splitting up state into bytes7, bytes6, bytes5 and bytes9 which totals bytes27
+      bytes loanState = tx.inputs[1].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemed, bytes remainingPartLoanState2 = remainingPartLoanState.split(6);
+      bytes5 nextFiveBytesLoanState, bytes lastPartLoanState = remainingPartLoanState2.split(5);
+      byte status, bytes4 lastPeriodInterestPaidBytes = nextFiveBytesLoanState.split(1);
+      bytes2 currentInterestRate, bytes lastSevenBytesLoanState = lastPartLoanState.split(2);
+
+      // No ongoing redemptions when paying interest
+      // This also prevents loans from switching to their nextInterestRate while being redeemed against
+      require(int(amountBeingRedeemed) == 0);
+
+      // Update the loan status
+      int statusInt = int(status);
+      if(statusInt < 2) statusInt = statusInt + 1;
+      byte newStatus = byte(statusInt);
+
+      // Authenticate collector
+      require(tx.inputs[4].tokenCategory == stabilityPoolTokenId + 0x01);
+      bytes currentPeriodPoolBytes = tx.inputs[4].nftCommitment;
+      int currentPeriodPool = int(currentPeriodPoolBytes);
+      int lastPeriodInterestPaid = int(lastPeriodInterestPaidBytes);
+      require(currentPeriodPool > lastPeriodInterestPaid);
+
+      // Read latest price from PriceContract contract
+      bytes4 oraclePriceBytes = tx.inputs[0].nftCommitment.slice(5,9);
+      int oraclePrice = int(oraclePriceBytes);
+
+      // Interest only needs to be paid if the loan debt is non-zero
+      int borrowedAmount = int(borrowedAmountBytes);
+      require(borrowedAmount > 0);
+
+      // Calculate newCollateralAmount after interestPayment
+      int interestRateLoan = int(currentInterestRate);
+      int borrowedValueSats = borrowedAmount * 100_000_000 / oraclePrice;
+      // Interest rate is denominated in per 10-million
+      int interestPayment = interestRateLoan * borrowedValueSats / 10_000_000;
+      int collateral = tx.inputs[1].value;
+      // Handle delayed interest payments for previous periods
+      int interestPeriods = currentPeriodPool - lastPeriodInterestPaid;
+      int newCollateralAmount = collateral - (interestPayment * interestPeriods) - 1500;
+
+      bytes2 nextInterestRate, bytes interestManagerConfiguration = lastSevenBytesLoanState.split(2);
+      // Update status, lastPeriodInterestPaid, current and next interest rate state in loan
+      bytes13 fixedPartLoanState = tx.inputs[1].nftCommitment.split(13)[0];
+      // Semantic typecast of 'currentPeriodPoolBytes' to bytes4 so concatenation is type bytes27
+      bytes27 newLoanCommitment = fixedPartLoanState + newStatus + bytes4(currentPeriodPoolBytes) + nextInterestRate + nextInterestRate + bytes5(interestManagerConfiguration);
+
+      // Recreate loan contract with new state at output index 1
+      require(tx.outputs[1].nftCommitment == newLoanCommitment, "Recreate loan contract - wrong nftCommitment");
+      require(tx.outputs[1].lockingBytecode == tx.inputs[1].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
+      require(tx.outputs[1].tokenCategory == tx.inputs[1].tokenCategory, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[1].value == newCollateralAmount, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[1].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
+
+      // Recreate functionContract at outputIndex3
+      require(tx.outputs[3].lockingBytecode == tx.inputs[3].lockingBytecode);
+      require(tx.outputs[3].nftCommitment == tx.inputs[3].nftCommitment);
+      require(tx.outputs[3].tokenCategory == tx.inputs[3].tokenCategory);
+      require(tx.outputs[3].value == 1000);
+      require(tx.outputs[3].tokenAmount == 0);
+    }
+}

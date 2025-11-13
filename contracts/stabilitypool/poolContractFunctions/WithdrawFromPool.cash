@@ -1,0 +1,116 @@
+pragma cashscript ^0.12.0;
+
+// WithdrawFromPool pool contract function
+// Allows user to withdraw ParityUSD from the stabilityPool by returning their staking receipt NFT
+// The staking receipt should be of the current period to see the latest stake amount
+// This latest stake amount is updated by the Payout contract to account for any funds used in liquidations
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x04
+*/
+
+/*  --- State Receipts Immutable NFT ---
+    bytes4 periodReceipt
+    bytes addedTokenAmount
+*/
+
+// for partial withdrawals:
+// minimumToWithdraw = 100.00 ParityUSD
+// minimumToKeepStaked = 100.00 ParityUSD
+
+// Note: In practice the 'periodReceipt' state is only used to derive the corresponding epoch (periodReceipt / 10)
+
+contract WithdrawFromPool(
+  ) {
+    // function withdraw
+    // Allows ParityUSD depositer to withdraw their tokens from the StabilityPool.
+    //
+    // Inputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-WithdrawFromPool, 03-userReceipt, 04-feeBch
+    // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-WithdrawFromPool, 03-newReceipt, 03/04-withdrawnTokens, ?04/05-changeBch
+
+    function withdraw(
+      int amountWithdrawal
+    ){
+      // Require function to be at inputIndex 2
+      require(this.activeInputIndex== 2);
+
+      // Authenticate stabilityPool at inputIndex 0
+      bytes stabilityPoolTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == stabilityPoolTokenId + 0x02);
+
+      // Parse stabilitypool state
+      bytes4 currentPeriodBytes, bytes remainingState = tx.inputs[0].nftCommitment.split(4);
+
+      // Authenticate staking receipt
+      require(tx.inputs[3].tokenCategory == stabilityPoolTokenId, "Invalid receipt, should have correct tokenId");
+
+      // Parse state staking receipt
+      bytes4 periodReceiptBytes, bytes amountStakedReceiptBytes = tx.inputs[3].nftCommitment.split(4);
+
+      // Check period receipt, should be in the same staking epoch (10 periods) as currentPeriod
+      int currentPeriod = int(currentPeriodBytes);
+      int periodReceipt = int(periodReceiptBytes);
+      require(periodReceipt / 10 == currentPeriod / 10);
+
+      // Check amountWithdrawal is in valid range
+      int amountStakedReceipt = int(amountStakedReceiptBytes);
+      bool isFullWithdrawal = amountWithdrawal == amountStakedReceipt;
+      // Check range amountWithdrawal: minimum treshold OR full withdrawal (if less than minimum)
+      require(amountWithdrawal >= 100_00 || isFullWithdrawal);
+      // Maximum withdrawal is the amountStakedReceipt
+      require(amountWithdrawal <= amountStakedReceipt);
+      
+      // The StabilityPool itself enforces the same lockingBytecode & tokenCategory
+      // Pool functions need to enforce the nftCommitment & value (and tokenAmount in sidecar)
+      
+      // Replicate StabilityPool value
+      require(tx.outputs[0].value == tx.inputs[0].value, "Recreate contract at output0 - should have same BCH Balance");
+      
+      // Change state StabilityPool
+      bytes6 totalStakedEpoch, bytes remainingStakedEpoch = remainingState.split(6);
+      int newTotalStakedEpoch = int(totalStakedEpoch) - amountWithdrawal;
+      int newRemainingStakedEpoch = int(remainingStakedEpoch) - amountWithdrawal;
+      bytes newStateStabilityPool = currentPeriodBytes + bytes6(newTotalStakedEpoch) + bytes(newRemainingStakedEpoch);
+      require(tx.outputs[0].nftCommitment == newStateStabilityPool);
+      
+      // TokenSidecar recreated with reduced tokenAmount
+      int newStabilityPoolSidecarTokenAmount = tx.inputs[1].tokenAmount - amountWithdrawal;
+      require(tx.outputs[1].tokenAmount == newStabilityPoolSidecarTokenAmount);
+
+      // Recreate functionContract exactly
+      require(tx.outputs[2].lockingBytecode == tx.inputs[2].lockingBytecode);
+      require(tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment);
+      require(tx.outputs[2].tokenCategory == tx.inputs[2].tokenCategory);
+      require(tx.outputs[2].value == 1000);
+
+      // Assign index for the ParityUSD staking withdrawal output
+      int withdrawalOutputIndex = 3;
+
+      // Handle partial withdrawals
+      if(!isFullWithdrawal){
+        // If not a full withdrawal, issue new receipt
+        withdrawalOutputIndex = 4;
+
+        // Require minimum for newAmountStaked
+        int newAmountStakedReceipt = amountStakedReceipt - amountWithdrawal;
+        require(newAmountStakedReceipt >= 100_00);
+        
+        // Issue receipt as fourth output
+        require(tx.outputs[3].tokenCategory == stabilityPoolTokenId, "Invalid receipt, should have correct tokenId");
+        bytes newReceipt = currentPeriodBytes + bytes(newAmountStakedReceipt);
+        require(tx.outputs[3].nftCommitment == newReceipt, "Invalid receipt, should have correct nftCommitment");
+        require(tx.outputs[3].value == 1000);
+      }
+      
+      // Output for Withrawal tokens, at index 3 or 4 depending on newReceipt or not
+      require(tx.outputs[withdrawalOutputIndex].tokenCategory == tx.inputs[1].tokenCategory);
+
+      // Optional output for BCH change
+      if (tx.outputs.length > withdrawalOutputIndex + 1) {
+        require(tx.outputs[withdrawalOutputIndex + 1].tokenCategory == 0x, "Invalid BCH change output - should not hold any tokens");
+      }
+
+      // Don't allow more outputs to prevent minting extra NFTs.
+      require(tx.outputs.length <= withdrawalOutputIndex + 2, "Invalid number of outputs");
+    }
+}

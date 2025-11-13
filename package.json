@@ -1,0 +1,17 @@
+{
+  "name": "parity_contracts",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "compile": "tsx compile.ts"
+  },
+  "dependencies": {
+    "cashc": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "tsx": "^4.20.6"
+  }
+}

@@ -1,0 +1,41 @@
+pragma cashscript ^0.12.0;
+
+// Parity Loan contract, which hold the BCH collateral for the loan
+// Always tied to a tokensidecar and a loanContractFunction
+
+// LoanTokenId (the tokenid of the loankey) state is offloaded to loanTokenSidecar by keeping an NFT with the loanTokenId
+// LoanContractFunctions are responsible for the contract logic managing the loan state & the BCH collateral
+
+/*  --- State Mutable NFT (10 items, 27 bytes) ---
+    byte identifier == 0x01
+    bytes6 borrowedTokenAmount (tokens)
+    bytes6 amountBeingRedeemed (tokens)
+    byte status (0x00 newLoan, 0x01 single period, 0x02 mature loan)
+    bytes4 lastPeriodInterestPaid
+    byte2 currentInterestRate
+    byte2 nextInterestRate
+    byte interestManager
+    bytes2 minRateManager
+    bytes2 maxRateManager
+*/
+
+// InterestManager 0x00 means no interest manager is assigned
+// Other interestManager values can be used to delegate interest management to a 3rd party 
+
+contract Loan(
+  ) {
+    function interact(){
+      // Authenticate loanTokenSidecar
+      int sidecarInputIndex = this.activeInputIndex + 1;
+      require(tx.inputs[sidecarInputIndex].outpointTransactionHash == tx.inputs[this.activeInputIndex].outpointTransactionHash);
+      require(tx.inputs[sidecarInputIndex].outpointIndex == tx.inputs[this.activeInputIndex].outpointIndex + 1);
+
+      // Authenticate Loancontract function
+      // Loan contract functions are identified by parityTokenId + a commitment of a single byte
+      bytes32 parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];
+      int nftFunctionInputIndex = this.activeInputIndex + 2;
+      require(tx.inputs[nftFunctionInputIndex].tokenCategory == parityTokenId);
+      bytes commitmentNftFunction = tx.inputs[nftFunctionInputIndex].nftCommitment;
+      require(commitmentNftFunction.length == 1);
+    }
+}

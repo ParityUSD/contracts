@@ -1,0 +1,73 @@
+pragma cashscript ^0.12.0;
+
+// Liquidate loan contract function
+// Is used to by the StabilityPool to liquidate undercollateralized loans
+// The loan gets closed, the stabilityPool repays the loan's debt and takes the loan's BCH collateral in return
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x01
+*/
+
+// Note: This function can only be called if there are no ongoing redemptions against the loan
+
+contract liquidateLoan(
+  bytes32 stabilityPoolTokenId
+  ) {
+      // function liquidate
+      // During loan liquidation requires that loan is under the required collateral amount and the outstanding borrowed amount is repayed
+      // StabilityPool pays for the transaction fees (normally no external fee input required).
+      //
+      // Inputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-LoanLiquidate, 04-stabilityPool, 05-stabilityPoolSidecar, 06-liquidateLoan, ?07-feeBch
+      // Outputs: 00-PriceContract, 01-LoanLiquidate, 02-stabilityPool, 03-stabilityPoolSidecar, 04-liquidateLoan, 05-opreturn, ?06-BchChange
+
+    function liquidate(){
+      // Require function to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+
+      // Authenticate PriceContract at inputIndex 0
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+      // Authenticate Loan at inputIndex 1, nftCommitment checked later
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+
+      // Authenticate stabilityPool
+      require(tx.inputs[4].tokenCategory == stabilityPoolTokenId + 0x02);
+
+      // Authenticate stabilityPool LiquidateLoan function
+      require(tx.inputs[6].tokenCategory == stabilityPoolTokenId);
+      require(tx.inputs[6].nftCommitment == 0x02);
+
+      // Parse loan state
+      bytes loanState = tx.inputs[1].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemed = remainingPartLoanState.split(6)[0];
+
+      // Loan should not have redemptions ongoing
+      require(int(amountBeingRedeemed) == 0);
+
+      // Read latest price from PriceContract contract
+      bytes4 oraclePriceBytes = tx.inputs[0].nftCommitment.slice(5,9);
+      int oraclePrice = int(oraclePriceBytes);
+
+      // Calculate maximum borrow amount to check liquidation condition
+      int collateral = tx.inputs[1].value;
+      // Collateral has to be 10% greater than maxBorrowBase
+      int maxBorrowBase = ((collateral * 10) / 11);
+      int maxBorrow = maxBorrowBase * oraclePrice / 100_000_000;
+      int borrowedAmount = int(borrowedAmountBytes);
+      // Check liquidation condition
+      require(borrowedAmount > maxBorrow, "Invalid liquidation, collateral ratio not below liquidation threshold");
+
+      // StabilityPool LiquidateLoan function enforces the repayment amount is burned at outputIndex 5
+
+      // Recreate functionContract at output 1
+      require(tx.outputs[1].lockingBytecode == tx.inputs[3].lockingBytecode);
+      require(tx.outputs[1].nftCommitment == tx.inputs[3].nftCommitment);
+      require(tx.outputs[1].tokenCategory == tx.inputs[3].tokenCategory);
+      require(tx.outputs[1].value == 1000);
+    }
+}

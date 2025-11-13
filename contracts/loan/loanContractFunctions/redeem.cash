@@ -1,0 +1,117 @@
+pragma cashscript ^0.12.0;
+
+// Redeem loan contract function
+// Is used by a redemption to finalize the redemption process, redeems ParityUSD tokens for BCH collateral from loan
+// Any redemption still pending when a newer period starts can be cancelled
+// This is to prevent the free option problem
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x03
+*/
+
+contract redeemLoan(
+  bytes32 redemptionTokenId,
+  int timelockRedemption,
+  int startBlockHeight,
+  int periodLengthBlocks
+  ) {
+      // function redeemOrCancel
+      // Finalize redemption process, redeems ParityUSD tokens for BCH collateral from loan
+      // If the redemption is still pending when a newer period starts, the redemption can be cancelled instead
+      // The redemption pays for the transaction fees (normally no external fee input required).
+      //
+      // Inputs: 00-loan, 01-loanTokenSidecar, 02-redeem, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, ?06-feeBch
+      // Outputs: 00-loan, 01-loanTokenSidecar, 02-redeem, 03-opreturn, 04-payoutRedemption, 05?-tokenChangeOutput, ?06-BchChange
+
+    function redeemOrCancel(){
+      // Require function to be at inputIndex 2
+      require(this.activeInputIndex == 2);
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+
+      // Authenticate loan at inputIndex 0, nftCommitment checked later
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+
+      // Authenticate redemption at inputIndex 3
+      require(tx.inputs[3].tokenCategory == redemptionTokenId + 0x01);
+
+      // Read state from redemption
+      bytes32 targetLoan, bytes redemptionAmountBytes = tx.inputs[3].nftCommitment.split(32);
+      int redemptionAmount = int(redemptionAmountBytes);
+      // Create a new variable which will be overwritten if the redemption is cancelled
+      // then the redemptionAmountToFinalize will be set to 0
+      int redemptionAmountToFinalize = redemptionAmount;
+
+      // Require target loan to match tokenid
+      require(tx.inputs[1].tokenCategory == targetLoan);
+
+      // Parse current period from loan contract
+      bytes4 lastPeriodInterestPaidBytes = tx.inputs[0].nftCommitment.slice(14,18);
+      int currentPeriod = int(lastPeriodInterestPaidBytes);
+
+      // Requiring version 2 to be able to use relative timelocks (sequenceNumber)
+      require(tx.version == 2);
+
+      // Check if the locktime is in a newer period than the current loan period
+      // Any redemption still running when the new period starts can be cancelled
+      int newPeriod = currentPeriod + 1;
+      int blockHeightNewPeriod = startBlockHeight + newPeriod * periodLengthBlocks;
+      // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
+      bool isInNewPeriod = tx.locktime >= blockHeightNewPeriod && tx.locktime < 500_000_000;
+
+      // If a new period has started, allow to cancel the redemption
+      if(isInNewPeriod){
+        redemptionAmountToFinalize = 0;
+      } else {
+        // Otherwise, proceed with the normal finalization of the redemption
+        // Enforce redemption timelock on redemption Utxo
+        int sequenceLoanInput = tx.inputs[3].sequenceNumber;
+        require(sequenceLoanInput == timelockRedemption);
+      }
+
+      // Read state from redemption sidecar
+      bytes redemptionPriceBytes = tx.inputs[4].nftCommitment.split(20)[1];
+      int redemptionPrice = int(redemptionPriceBytes);
+
+      // Calculate new loan collateral after redemption
+      // Use the redemptionAmountToFinalize which is 0 if the redemption is cancelled
+      int redeemedCollateral = redemptionAmountToFinalize * 100_000_000 / redemptionPrice;
+      int newLoanCollateral = tx.inputs[0].value - redeemedCollateral;
+
+      // Parse loan state, used to construct new loan commitment
+      bytes loanState = tx.inputs[0].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemed, bytes lastPartLoanState = remainingPartLoanState.split(6);
+
+      // Construct loan state after redemption (debt decreases, amountBeingRedeemed decreases)
+      int newAmountBeingRedeemed = int(amountBeingRedeemed) - redemptionAmount;
+      int newBorrowAmount = int(borrowedAmountBytes) - redemptionAmount;
+      bytes27 newLoanCommitment = 0x01 + bytes6(newBorrowAmount) + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
+
+      // Recreate loan contract with new state and new collateral amount at output index 0
+      require(tx.outputs[0].nftCommitment == newLoanCommitment);
+      require(tx.outputs[0].value == newLoanCollateral);
+      require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode);
+      require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory);
+      require(tx.outputs[0].tokenAmount == 0);
+      
+      // Recreate functionContract at output index 2
+      require(tx.outputs[2].lockingBytecode == tx.inputs[2].lockingBytecode);
+      require(tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment);
+      require(tx.outputs[2].tokenCategory == tx.inputs[2].tokenCategory);
+      require(tx.outputs[2].value == 1000);
+      require(tx.outputs[2].tokenAmount == 0);
+
+      // Burn redeemed ParityUSD by sending to unspendable opreturn output at index 3
+      require(tx.outputs[3].lockingBytecode == new LockingBytecodeNullData([0x]));
+      if(redemptionAmountToFinalize > 0){
+        require(tx.outputs[3].tokenCategory == parityTokenId);
+        require(tx.outputs[3].tokenAmount == redemptionAmountToFinalize);
+      } else {
+        require(tx.outputs[3].tokenCategory == 0x);
+      }
+
+      // Logic for creating the redemption payout output and redemption token change is enforced by the redemption contract
+    }
+}

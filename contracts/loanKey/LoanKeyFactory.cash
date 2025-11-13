@@ -1,0 +1,62 @@
+pragma cashscript ^0.12.0;
+
+// LoanKeyFactory contract, creates provably unique loankeys while allowing BCMR metadata compatibility.
+
+/*  --- Minting NFT ---
+    no state (0x)
+*/
+
+contract LoanKeyFactory(
+  bytes loanKeyOriginEnforcerLockingScript,
+  bytes loanKeyOriginProofLockingScript
+){
+    // function create
+    // Create a LoanKey with LoanKeySidecar proof to be authenticated by the LoanKeyOriginEnforcer.
+    //
+    // Inputs: 00-vout0Utxo, 01-LoanKeyFactory, 02-feeBch
+    // Outputs: 00-authhead, 01-LoanKeyFactory, 02-LoanKeyOriginEnforcer, 03-LoanKeyOriginProof, 04?-BchChange, 05?-opreturn
+
+  function create() {
+    require(this.activeInputIndex == 1);
+
+    // Check for a vout0 utxo at inputIndex 0 to use for token genesis
+    require(tx.inputs[0].outpointIndex == 0);
+    bytes32 reservedTokenId = tx.inputs[0].outpointTransactionHash;
+
+    // Output 0 of a token-genesis transaction holds the authchain in the BCMR metadata standard
+    // Unrestricted output so the user can claim the authchain, or so the authchain can be burned
+    require(tx.outputs[0].tokenCategory == 0x);
+
+    // Re-Create the LoanKeyFactory at outputIndex 1
+    require(tx.outputs[1].lockingBytecode == tx.inputs[1].lockingBytecode);
+    require(tx.outputs[1].tokenCategory == tx.inputs[1].tokenCategory);
+    require(tx.outputs[1].value == 1000);
+    require(tx.outputs[1].nftCommitment == 0x);
+
+    // Create the loanKeyOriginEnforcer output at outputIndex 2
+    require(tx.outputs[2].tokenCategory == reservedTokenId + 0x02);
+    require(tx.outputs[2].nftCommitment == 0x);
+    require(tx.outputs[2].tokenAmount == 0);
+    require(tx.outputs[2].value == 1000);
+    require(tx.outputs[2].lockingBytecode == loanKeyOriginEnforcerLockingScript);
+
+    // Create the loanKeyOriginProof at outputIndex 3
+    bytes32 loanKeyFactoryTokenId = tx.inputs[1].tokenCategory.split(32)[0];
+    require(tx.outputs[3].tokenCategory == loanKeyFactoryTokenId);
+    require(tx.outputs[3].nftCommitment == 0x);
+    require(tx.outputs[3].value == 1000);
+    require(tx.outputs[3].lockingBytecode == loanKeyOriginProofLockingScript);
+
+    // Allow for extra outputs (BCH change output, opreturn output)
+    if (tx.outputs.length > 4) {
+      require(tx.outputs[4].tokenCategory == 0x);
+    }
+    if (tx.outputs.length > 5) {
+      require(tx.outputs[5].tokenCategory == 0x);
+    }
+
+    // Restrict maximum outputs to 6 total
+    // This is to protect the LoanKey & LoanKeyFactory minting capabilities
+    require(tx.outputs.length <= 6);
+  }
+}

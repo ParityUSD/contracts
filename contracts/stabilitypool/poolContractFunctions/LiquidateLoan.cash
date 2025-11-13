@@ -1,0 +1,89 @@
+pragma cashscript ^0.12.0;
+
+// LiquidateLoan pool contract function
+// Enables the StabilityPool to liquidate any undercollateralized loan by repaying the loan's debt from its staked supply
+// The repayment of the debt is done by burning the parityUSD, this is done by sending them to an unspendable OP_RETURN output
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x02
+*/
+
+contract LiquidateLoan(
+  bytes32 parityTokenId
+  ) {
+    // function liquidate
+    // Repays the outstanding ParityUSD debt on a liquidated loan from the StabilityPoolSidecar's recorded supply
+    // StabilityPool pays for the transaction fees (normally no external fee input required).
+    //
+    // Inputs: 00-pricecontract, 01-loan, 02-loanTokenSidecar, 03-LoanLiquidate, 04-stabilityPool, 05-stabilityPoolSidecar, 06-liquidateLoan, ?07-feeBch
+    // Outputs: 00-pricecontract, 01-LoanLiquidate, 02-StabilityPool, 03-stabilityPoolSidecar, 04-liquidateLoan, 05-opreturn, ?06-BchChange
+
+    function liquidate(){
+      // Require function to be at inputIndex 6
+      require(this.activeInputIndex== 6);
+
+      // Authenticate PriceContract at inputIndex 0
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+      // Authenticate Loan at inputIndex 1
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[1].nftCommitment.split(1)[0] == 0x01);
+
+      // Authenticate loan functionContract at inputIndex 3
+      require(tx.inputs[3].tokenCategory == parityTokenId);
+      require(tx.inputs[3].nftCommitment == 0x01);      
+
+      // Authenticate stabilityPool at inputIndex 4
+      bytes stabilityPoolTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[4].tokenCategory == stabilityPoolTokenId + 0x02);
+
+      // Parse stabilitypool state
+      bytes10 fixedState, bytes remainingStakedEpochBytes = tx.inputs[4].nftCommitment.split(10);
+
+      // Parse loan state
+      bytes6 borrowedTokenAmount = tx.inputs[1].nftCommitment.slice(1,7);
+      int amountDebtToRepay = int(borrowedTokenAmount);
+      int remainingStakedEpoch = int(remainingStakedEpochBytes);
+
+      // Stabilitypool can only use tokens staked since the previous epoch in liquidation
+      // The stabilitypool 'newRemainingStakedEpoch' state is not allowed to go below zero
+      int newRemainingStakedEpoch = remainingStakedEpoch - amountDebtToRepay;
+      require(newRemainingStakedEpoch >= 0);
+
+      // The StabilityPool itself enforces the same lockingBytecode & tokenCategory
+      // Pool functions need to enforce the nftCommitment & value (and tokenAmount in sidecar)
+
+      // Update stabilitypool state
+      bytes newStateStabilityPool = fixedState + bytes(newRemainingStakedEpoch);
+      require(tx.outputs[2].nftCommitment == newStateStabilityPool);
+
+      // Move Loans BCH collateral to the StabilityPool, minus tx fee
+      int newStabilityPoolBalance = tx.inputs[4].value + tx.inputs[1].value - 1500;
+      require(tx.outputs[2].value == newStabilityPoolBalance);
+
+      // Protect stabilitypool tokensidecar from being drained
+      // Stabilitypool tokensidecar is at inputIndex 5, recreated at outputIndex 3 in liquidateLoan
+      int newTokenAmountPoolSidecar = tx.inputs[5].tokenAmount - amountDebtToRepay;
+      require(tx.outputs[3].tokenAmount == newTokenAmountPoolSidecar);
+
+      // Recreate functionContract exactly
+      require(tx.outputs[4].lockingBytecode == tx.inputs[6].lockingBytecode);
+      require(tx.outputs[4].nftCommitment == tx.inputs[6].nftCommitment);
+      require(tx.outputs[4].tokenCategory == tx.inputs[6].tokenCategory);
+      require(tx.outputs[4].value == 1000);
+
+      // Burn repaid ParityUSD by sending to unspendable opreturn output at index 5
+      require(tx.outputs[5].tokenCategory == parityTokenId);
+      require(tx.outputs[5].tokenAmount == amountDebtToRepay);
+      require(tx.outputs[5].lockingBytecode == new LockingBytecodeNullData([0x]));
+
+      // Optionally create bch change output at outputIndex 6
+      if (tx.outputs.length > 6) {
+        require(tx.outputs[6].tokenCategory == 0x, "Invalid BCH change output - should not hold any tokens");
+      }
+
+      // Restrict maximum outputs to 7 total to protect StabilityPool minting capability
+      require(tx.outputs.length <= 7);
+    }
+}

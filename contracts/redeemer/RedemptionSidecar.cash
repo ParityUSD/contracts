@@ -1,0 +1,25 @@
+pragma cashscript ^0.12.0;
+
+// Redemption sidecar contract. Used for both RedemptionStateSidecar and redemptionTokenSidecar
+// Tag along input, always tied to the input at activeInputIndex - 1
+
+// example of finalizeRedemption transaction:
+// 04-redemption, 05-redemptionStateSidecar, 06-redemptionTokenSidecar
+
+// The RedemptionStateSidecar holds an NFT with the following state:
+/*  --- State Immutable NFT---
+    bytes20 redeemerPkh
+*/
+// The redemptionTokenSidecar holds ParityUSD tokens and no NFT
+
+contract RedemptionSidecar() {
+  // function attach
+  // Ties together the Redemption, the RedemptionStateSidecar and the redemptionTokenSidecar UTXOs
+
+  function attach() {
+    // Authenticate activeInputIndex - 1 to be an input part of the redemption
+    int redeemerInputIndex = this.activeInputIndex - 1;
+    require(tx.inputs[this.activeInputIndex].outpointTransactionHash == tx.inputs[redeemerInputIndex].outpointTransactionHash);
+    require(tx.inputs[this.activeInputIndex].outpointIndex == tx.inputs[redeemerInputIndex].outpointIndex + 1);
+  }
+}

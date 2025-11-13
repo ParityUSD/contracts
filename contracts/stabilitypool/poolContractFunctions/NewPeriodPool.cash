@@ -1,0 +1,123 @@
+pragma cashscript ^0.12.0;
+
+// NewPeriodPool pool contract function
+// Updates the StabilityPool to a new period and creates a new Collector contract
+// Every 10th period NewPeriodPool sends accumulated BCH to a new Payout contract
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x03
+*/
+
+contract NewPeriodPool(
+    bytes payoutLockingScript,
+    bytes collectorLockingScript,
+    int startBlockHeight,
+    int periodLengthBlocks
+  ) {
+    // function newPeriod
+    // Starts a new period. Sends accumulated BCH from Collector (interest payments) and StabilityPool (liquidations) to a new Payout contract UTXO.
+    // StabilityPool pays for the transaction fees if possible (normally no external fee input required).
+    //
+    // Inputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-newPeriod, 03-collector, ?04-feeBch
+    // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-newPeriod, 03-newCollector, 04-protocolFee, 05?-newPayout, ?06-BchChange
+
+    function newPeriod(){
+      // Require function to be at inputIndex 2
+      require(this.activeInputIndex== 2);
+
+      // Authenticate stabilityPool at inputIndex 0
+      bytes stabilityPoolTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == stabilityPoolTokenId + 0x02);
+
+      // Parse stabilitypool state
+      bytes4 currentPeriodBytes, bytes remainingStabilityPoolState = tx.inputs[0].nftCommitment.split(4);
+
+      // Authenticate collector contract at inputIndex 3 with mutable NFT
+      require(tx.inputs[3].tokenCategory == stabilityPoolTokenId + 0x01);
+      require(tx.inputs[3].nftCommitment == currentPeriodBytes);
+      int totalCollectedInterest = tx.inputs[3].value;
+      int collectedInterestAfterFee = (7 * totalCollectedInterest) / 10;
+
+      // Check if current blockheight is in new period
+      // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
+      int currentPeriod = int(currentPeriodBytes);
+      int newPeriod = currentPeriod + 1;
+      int blockHeightNewPeriod = startBlockHeight + newPeriod * periodLengthBlocks;
+      require(tx.locktime >= blockHeightNewPeriod && tx.locktime < 500_000_000);
+
+      // The StabilityPool itself enforces the same lockingBytecode & tokenCategory
+      // Pool functions need to enforce the nftCommitment & value (and tokenAmount in sidecar)
+      // The pool enforcements happen in the 'if' check depending on whether a new epoch is started or not
+      
+      // StabilityPoolSidecar keeps same token amount
+      require(tx.outputs[1].tokenAmount == tx.inputs[1].tokenAmount);
+
+      // Recreate functionContract exactly
+      require(tx.outputs[2].lockingBytecode == tx.inputs[2].lockingBytecode);
+      require(tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment);
+      require(tx.outputs[2].tokenCategory == tx.inputs[2].tokenCategory);
+      require(tx.outputs[2].value == 1000);
+
+      // Create Collector contract at outputIndex 3
+      bytes4 newPeriodBytes = bytes4(newPeriod);
+      require(tx.outputs[3].lockingBytecode == collectorLockingScript);
+      require(tx.outputs[3].tokenCategory == stabilityPoolTokenId + 0x01);
+      require(tx.outputs[3].nftCommitment == newPeriodBytes);
+      require(tx.outputs[3].value == 1000);
+
+      // Protocol Fee BCH output at outputIndex 4
+      // Logic for protocolFee amount is enforced in Collector contract
+      require(tx.outputs[4].tokenCategory == 0x, "Invalid BCH output - should not hold any tokens");
+
+      // Calculate new stabilitypool balance, clamp to minimum 1000 sats
+      int oldStabilityPoolBalance = tx.inputs[0].value;
+      int newStabilityPoolBalanceUnclamped = oldStabilityPoolBalance + collectedInterestAfterFee - 5000;
+      int newStabilityPoolBalance = max(newStabilityPoolBalanceUnclamped, 1000);
+
+      // Create Payout contract each epoch (every 10th period)
+      if(newPeriod % 10 == 0) {
+        // During Payouts StabilityPool should be recreated with 1000 sats balance
+        // The calculated newStabilityPoolBalance is sent to the Payout contract instead
+        require(tx.outputs[0].value == 1000);
+
+        // Update all state StabilityPool
+        int newAmountStakedEpoch = tx.outputs[1].tokenAmount;
+        bytes newStateStabilityPool = newPeriodBytes + bytes6(newAmountStakedEpoch) + bytes(newAmountStakedEpoch);
+        require(tx.outputs[0].nftCommitment == newStateStabilityPool);
+
+        // Create Payout contract at outputIndex 5
+        require(tx.outputs[5].lockingBytecode == payoutLockingScript);
+        require(tx.outputs[5].tokenCategory == tx.inputs[0].tokenCategory);
+        int payoutAmount = newStabilityPoolBalance;
+        require(tx.outputs[5].value == payoutAmount);
+
+        // Construct and check state for payout contract
+        bytes6 totalStakedEpochBytes, bytes remainingStakedEpochBytes = remainingStabilityPoolState.split(6);
+        int payoutAmountMinusDust = payoutAmount - 1000; 
+        // Encode variable length encoded remainingStakedEpochBytes as fixed bytes6 size
+        bytes6 remainingStakedEpochBytes6 = bytes6(int(remainingStakedEpochBytes));
+        bytes payoutContractState = currentPeriodBytes + totalStakedEpochBytes + remainingStakedEpochBytes6 + bytes(payoutAmountMinusDust);
+        require(tx.outputs[5].nftCommitment == payoutContractState);
+      } else {
+        // Otherwise StabilityPool should be recreated with the new calculated balance
+        require(tx.outputs[0].value == newStabilityPoolBalance);
+
+        // Update period stabilityPool state, keep all other state the same
+        bytes newStateStabilityPool = newPeriodBytes + remainingStabilityPoolState;
+        require(tx.outputs[0].nftCommitment == newStateStabilityPool);
+
+        // Optionally allow output index 5 for BCH change but prevent minting extra NFTs
+        if(tx.outputs.length > 5){
+          require(tx.outputs[5].tokenCategory == 0x, "Invalid BCH output - should not hold any tokens");
+        }
+      }
+
+      // Optionally create bch change output at outputIndex 6
+      if (tx.outputs.length > 6) {
+        require(tx.outputs[6].tokenCategory == 0x, "Invalid BCH change output - should not hold any tokens");
+      }
+
+      // Don't allow more outputs to prevent minting extra NFTs
+      require(tx.outputs.length <= 7, "Invalid number of outputs - should have 7 at most");
+    }
+}

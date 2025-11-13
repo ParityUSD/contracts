@@ -1,0 +1,87 @@
+pragma cashscript ^0.12.0;
+
+// ChangeInterest loan contract function
+// Is used to update the next period interest rate of a loan
+// Can be used by the loan owner (without restrictions) or by the loan's interest manager (within predefined min/max range)
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x08
+*/
+
+contract changeInterest(
+  ) {
+      // function changeInterest
+      // Allows loan owner or the loan's interest manager to change the loans next period interest rate
+      //
+      // Inputs: 00-loan, 01-loanTokenSidecar, 02-changeInterest, 03-loanKey-or-loanManagementToken, 04-feeBch
+      // Outputs: 00-loan, 01-loanTokenSidecar, 02-changeInterest, 03-loanKey-or-loanManagementToken, ?04-changeBch
+
+    function changeInterest(
+      // Note: the bytes length of function arguments are not automatically enforced
+      bytes2 nextInterestRate
+    ){
+      // Require function to be at inputIndex 2
+      require(this.activeInputIndex == 2);
+
+      // Validate input nextInterestRate
+      require(nextInterestRate.length == 2);
+      // Check nextInterestRate is non-negative
+      int nextInterestRateInt = int(nextInterestRate);
+      require(nextInterestRateInt >= 0);
+
+      // Authenticate Loan at inputIndex 0, nftCommitment checked below
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+
+      // Parse loan state
+      bytes loanState = tx.inputs[0].nftCommitment;
+      byte identifier = loanState.split(1)[0];
+      require(identifier == 0x01);
+      bytes interestManagerConfiguration = loanState.split(22)[1];
+      byte interestManager, bytes minMaxRates = interestManagerConfiguration.split(1);
+
+      // Read loanTokenId from tokensidecar at inputIndex1
+      bytes loanTokenId = tx.inputs[1].tokenCategory;
+
+      // Check tokenKey provided at inputIndex3 matches loanTokenId
+      require(tx.inputs[3].tokenCategory.split(32)[0] == loanTokenId);
+      // Check if tokenKey matches loan owner or loan manager
+      // Enforce that there cannot be a manager using 0x00 as commitement (this indicates no manager)
+      bool isLoanOwner = tx.inputs[3].tokenCategory == loanTokenId + 0x02;
+      bool isLoanManager = tx.inputs[3].nftCommitment == interestManager && interestManager != 0x00;
+      require(isLoanOwner || isLoanManager);
+
+      // Check if loan manager provided rate is within authorized range
+      if(isLoanManager){
+        bytes2 minRateManagerBytes, bytes maxRateManagerBytes = minMaxRates.split(2);
+        int minRateManager = int(minRateManagerBytes);
+        require(nextInterestRateInt >= minRateManager , "Next interest rate out of range for manager - below minimum");
+        int maxRateManager = int(maxRateManagerBytes);
+        require(nextInterestRateInt <= maxRateManager, "Next interest rate out of range for manager - exceeds maximum");
+      }
+
+      // Update nextInterestRate
+      bytes20 fixedPartLoanState = loanState.split(20)[0];
+      bytes27 newLoanCommitment = fixedPartLoanState + nextInterestRate + bytes5(interestManagerConfiguration);
+
+      // Recreate loan contract with new state and atleast same collateral
+      require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
+      require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[0].nftCommitment == newLoanCommitment, "Invalid state loan contract - wrong nftCommitment");
+      require(tx.outputs[0].value >= tx.inputs[0].value, "Recreate loan contract with same or higher BCH amount");
+      require(tx.outputs[0].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
+
+      // Recreate functionContract
+      require(tx.outputs[2].lockingBytecode == tx.inputs[2].lockingBytecode);
+      require(tx.outputs[2].nftCommitment == tx.inputs[2].nftCommitment);
+      require(tx.outputs[2].tokenCategory == tx.inputs[2].tokenCategory);
+      require(tx.outputs[2].value == 1000);
+      require(tx.outputs[2].tokenAmount == 0);
+
+      // Recreate loanKey or loanManagementToken to user
+      require(tx.outputs[3].lockingBytecode == tx.inputs[3].lockingBytecode, "Recreate loanKey or loanManagementToken - invalid lockingBytecode");
+      require(tx.outputs[3].tokenCategory == tx.inputs[3].tokenCategory, "Recreate loanKey or loanManagementToken - invalid tokenCategory");
+      require(tx.outputs[3].nftCommitment == tx.inputs[3].nftCommitment, "Recreate loanKey or loanManagementToken - invalid nftCommitment");
+      require(tx.outputs[3].value == tx.inputs[3].value, "Recreate loanKey or loanManagementToken - invalid value");
+    }
+}

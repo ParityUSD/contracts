@@ -1,0 +1,36 @@
+pragma cashscript ^0.12.0;
+
+// Contract for StabilityPool which holds the pool state and BCH earning from liquidations
+// Always tied to a StabilityPoolSidecar and a poolContractFunction
+
+// PoolContractFunction are responsible for the contract logic updating the nft state and the BCH value
+
+/*  --- State StabilityPool Minting NFT ---
+    bytes4 period
+    bytes6 totalStakedEpoch (tokens)
+    bytes remainingStakedEpoch (tokens)
+*/
+
+contract StabilityPool(
+  ) {
+    function interact(){
+      // Authenticate TokenSidecar
+      int tokenSidecarInputIndex = this.activeInputIndex + 1;
+      require(tx.inputs[tokenSidecarInputIndex].outpointTransactionHash == tx.inputs[this.activeInputIndex].outpointTransactionHash);
+      require(tx.inputs[tokenSidecarInputIndex].outpointIndex == tx.inputs[this.activeInputIndex].outpointIndex + 1);
+
+      // Authenticate stabilityPool function
+      // StabilityPool contract functions are identified by stabilityPoolTokenId + a commitment of a single byte
+      bytes32 stabilityPoolTokenId = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];
+      int nftFunctionInputIndex = this.activeInputIndex + 2;
+      require(tx.inputs[nftFunctionInputIndex].tokenCategory == stabilityPoolTokenId);
+      bytes commitmentNftFunction = tx.inputs[nftFunctionInputIndex].nftCommitment;
+      require(commitmentNftFunction.length == 1);
+
+      // Replicate StabilityPool (same lockingBytecode & tokenCategory)
+      int outputIndex = this.activeInputIndex;
+      if(commitmentNftFunction == 0x02) outputIndex = 2; // Special outputIndex for liquidateLoan function
+      require(tx.outputs[outputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+      require(tx.outputs[outputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
+    }
+}

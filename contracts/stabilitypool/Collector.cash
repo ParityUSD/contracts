@@ -1,0 +1,81 @@
+pragma cashscript ^0.12.0;
+
+// Collector contract for stability pool
+// The Collector contract collects interest paid from loans and finally pays it forward to the StabilityPool
+
+// Collector state does not mutate, instead the mutable capability is used to distinguish from StabilityPool receipts
+/*  --- State Mutable NFT ---
+    bytes4 period
+*/
+
+contract Collector(
+  bytes32 parityTokenId,
+  bytes lockingBytecodeProtocolFee
+) {
+  // function collect
+  // Receives the interest (BCH) paid from loans.
+  //
+  // Inputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-payInterest, 04-collector
+  // Outputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-payInterest, 04-collector
+
+  function collect() {
+    // Require contract to be at inputIndex 4
+    require(this.activeInputIndex == 4);
+
+    // Authenticate PriceContract at inputIndex 0
+    require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+    require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+    // Authenticate Loan at inputIndex 1
+    require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+    require(tx.inputs[1].nftCommitment.split(1)[0] == 0x01);
+
+    // Authenticate loan functionContract at inputIndex 3
+    require(tx.inputs[3].tokenCategory == parityTokenId);
+    require(tx.inputs[3].nftCommitment == 0x07);
+
+    // The interest payment calculation happens in the payInterest functionContract
+    // Get the new Collector value from introspected loan collateral difference
+    // The difference in BCH between old and new loan collateral (minus 1500 sats fee) is the interest paid
+    int oldLoanCollateral = tx.inputs[1].value;
+    int newLoanCollateral = tx.outputs[1].value;
+    int interestPaid = oldLoanCollateral - newLoanCollateral - 1500;
+    int newCollectorValue = tx.inputs[4].value + interestPaid;
+      
+    // Replicate Collector contract at outputIndex4 with increased BCH holdings
+    require(tx.outputs[4].lockingBytecode == tx.inputs[4].lockingBytecode);
+    require(tx.outputs[4].nftCommitment == tx.inputs[4].nftCommitment);
+    require(tx.outputs[4].tokenCategory == tx.inputs[4].tokenCategory);
+    require(tx.outputs[4].value == newCollectorValue);
+  }
+
+  // function payToStabilityPool
+  // Pay interest collected by the Collector forward to the StabilityPool
+  // StabilityPool pays for the transaction fees if possible (normally no external fee input required).
+  //
+  // Inputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-NewPeriodPool, 03-collector, ?04-feeBch
+  // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-NewPeriodPool, 03-newPayout, 04-newCollector, 05-protocolFee, ?06-BchChange 
+
+  function payToStabilityPool() {
+    // Require function to be at inputIndex 3
+    require(this.activeInputIndex== 3);
+    bytes32 stabilityPoolTokenId = tx.inputs[this.activeInputIndex].tokenCategory.split(32)[0];
+      
+    // Authenticate stabilityPool at inputIndex 0 with minting NFT
+    require(tx.inputs[0].tokenCategory == stabilityPoolTokenId + 0x02);
+
+    // Authenticate pool functionContract at inputIndex 2
+    require(tx.inputs[2].tokenCategory == stabilityPoolTokenId);
+    require(tx.inputs[2].nftCommitment == 0x03);
+
+    // Calculate 30% of collectedInterest for protocol fee
+    // Clamped to a minimum of 1000 sats
+    int collectedInterest = tx.inputs[3].value;
+    int feeAmount = (3 * collectedInterest) / 10;
+    int clampedFeeAmount = max(feeAmount, 1000);
+
+    // Add protocol fee output at outputIndex 4
+    require(tx.outputs[4].value == clampedFeeAmount);
+    require(tx.outputs[4].lockingBytecode == lockingBytecodeProtocolFee);
+  }
+}

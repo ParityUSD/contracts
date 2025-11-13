@@ -1,0 +1,94 @@
+pragma cashscript ^0.12.0;
+
+// SwapInRedemption loan contract function
+// Is used by an existing redemption, to change target of the redemption to be a lower interest loan than the original target loan
+// This function is attached to the lower interest loan that is being swapped in
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x05
+*/
+
+// Note: swapInRedemption can only be performed against loans with status "0x02" (mature loan)
+
+contract swapInRedemption(
+  bytes32 redemptionTokenId
+  ) {
+      // function swapInRedemption
+      // Swaps in a lower interest paying loan as target loan for an active redemption
+      // The redemption can pay for the transaction fees of one redemption-swap (normally no external fee input required).
+      //
+      // Inputs: 00-loan, 01-loanTokenSidecar, 02-swapOutRedemption, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, 06-loanLowerInterest, 07-loanTokenSidecar, 08-swapInRedemption, ?09-feeBch
+      // Outputs: 00-loan, 01-loanTokenSidecar, 02-swapOutRedemption, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, 06-loanLowerInterest, 07-loanTokenSidecar, 08-swapInRedemption, ?09-changeBch
+
+    function swapInRedemption(){
+      // Require function to be at inputIndex 8
+      require(this.activeInputIndex == 8);
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+
+      // Authenticate Loan at inputIndex 0
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x01);
+
+      // Authenticate swapOutRedemption at inputIndex 2
+      require(tx.inputs[2].tokenCategory == parityTokenId);
+      require(tx.inputs[2].nftCommitment == 0x06);
+
+      // Authenticate redemption
+      require(tx.inputs[3].tokenCategory == redemptionTokenId + 0x01);
+
+      // Authenticate lower interest Loan at inputIndex 6, nftCommitment checked below
+      require(tx.inputs[6].tokenCategory == parityTokenId + 0x01);
+
+      // Parse loan state
+      bytes loanState = tx.inputs[6].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemedBytes, bytes lastPartLoanState = remainingPartLoanState.split(6);
+      byte loanStatus = lastPartLoanState.split(1)[0];
+
+      // This prevents new loans from being created just to swap targets of existing redemptions
+      require(loanStatus == 0x02, "swapInRedemption can only be performed against mature loans");
+
+      // Calculate outstanding debt available for redemptions
+      int borrowedAmount = int(borrowedAmountBytes);
+      int amountBeingRedeemed = int(amountBeingRedeemedBytes);
+      int outstandingBorrowAmount = borrowedAmount - amountBeingRedeemed;
+      // Check that swapIn loan is not fully being redeemed already
+      // Implicitly also checks that loan debt is non-zero
+      require(outstandingBorrowAmount > 0);
+
+      // Read original redemption amount from sidecar (not from state which is the current amount being redeemed)
+      int originalRedemptionAmount = tx.inputs[5].tokenAmount;
+      // New redemption amount should be the either originalRedemptionAmount or the maximum amount that can be still be redeemed
+      int newRedemptionAmount = min(originalRedemptionAmount, outstandingBorrowAmount);
+      int newAmountBeingRedeemed = amountBeingRedeemed + newRedemptionAmount;
+
+
+      // Update mutable redemption state at output index 3
+      // Read swappedIn tokenId from loansidecar at inputIndex 7
+      bytes swapedInLoanTokenId = tx.inputs[7].tokenCategory;
+      bytes6 newRedemptionAmountBytes = bytes6(newRedemptionAmount);
+      // Semantic typecast of 'swapedInLoanTokenId' so the concatenated result is bytes38
+      bytes38 newRedemptionState = bytes32(swapedInLoanTokenId) + newRedemptionAmountBytes;
+      require(tx.outputs[3].nftCommitment == newRedemptionState);
+      // Logic for recreation of redemption contract is enforced in the redemption contract
+
+      // Construct new loan state
+      bytes27 newLoanState = firstPartLoanState + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
+
+      // Recreate loan contract with new state at output index 6
+      require(tx.outputs[6].nftCommitment == newLoanState, "Invalid state loan contract - wrong nftCommitment");
+      require(tx.outputs[6].lockingBytecode == tx.inputs[6].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
+      require(tx.outputs[6].value == tx.inputs[6].value, "Recreate loan contract with same BCH amount");
+      require(tx.outputs[6].tokenCategory == tx.inputs[6].tokenCategory, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[6].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
+
+      // Recreate functionContract at output index 8
+      require(tx.outputs[8].lockingBytecode == tx.inputs[8].lockingBytecode);
+      require(tx.outputs[8].nftCommitment == tx.inputs[8].nftCommitment);
+      require(tx.outputs[8].tokenCategory == tx.inputs[8].tokenCategory);
+      require(tx.outputs[8].value == 1000);
+      require(tx.outputs[8].tokenAmount == 0);
+    }
+}

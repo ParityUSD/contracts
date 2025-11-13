@@ -1,0 +1,178 @@
+pragma cashscript ^0.12.0;
+
+// Parity borrowing contract, letting users create loans and borrow at current exchange rate as provided by PriceContract
+
+// Holds Fungible Token supply
+/*  --- Minting NFT---
+  bytes4 period
+*/
+
+// minimumDebt = 100.00 ParityUSD
+// minimum collateral ratio = 110%
+// borrowing fee = 0.25% of borrowed amount
+
+contract Parity(
+    bytes loanLockingScript,
+    bytes loanTokensidecarLockingScript,
+    bytes borrowingFeeLockingScript,
+    bytes loanKeyOriginEnforcerLockingScript,
+    int startBlockHeight,
+    int periodLengthBlocks
+  ) {
+      // function borrow
+      // Borrow ParityUSD with BCH as collateral. Borrower receives a loankey minting NFT with unique category to manage the loan.
+      //
+      // Inputs: 00-parity, 01-pricecontract, 02-loanKeyOriginEnforcer, 03-loanKeyOriginProof, 04-BchCollateral
+      // Outputs: 00-parity, 01-pricecontract, 02-loan, 03-loanTokenSidecar, 04-borrowingFeeOutput, 05-loanKey, 06-borrowedTokens, 07?-BchChange, 08?-frontendfee
+
+    function borrow(
+      // Note: the bytes lengths of function arguments are not automatically enforced
+      bytes2 startingInterest,
+      bytes5 interestManagerConfiguration
+    ) {
+      require(this.activeInputIndex == 0, "Parity contract must always be at input index 0");
+      bytes32 parityTokenId = tx.inputs[0].tokenCategory.split(32)[0];
+
+      // Authenticate pricecontract
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[1].nftCommitment.split(1)[0] == 0x00);
+
+      // Use provided minting nft as loanKey & loanSidecar identifier
+      bytes32 loanKeyTokenId, bytes loanKeyCapability = tx.inputs[2].tokenCategory.split(32);
+      require(loanKeyCapability == 0x02);
+      require(tx.inputs[2].lockingBytecode == loanKeyOriginEnforcerLockingScript);
+
+      // Recreate contract at outputIndex0 exactly
+      require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Recreate contract at output0 - invalid lockingBytecode");
+      require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory, "Recreate contract at output0 - invalid tokenCategory");
+      require(tx.outputs[0].value == 1000, "Recreate contract at output0 - needs to hold exactly 1000 sats");
+      require(tx.outputs[0].nftCommitment == tx.inputs[0].nftCommitment);
+
+      // The amount borrowed is calculated through introspection, not passed explicitly
+      int borrowedAmount = tx.inputs[0].tokenAmount - tx.outputs[0].tokenAmount;
+      // Enforce borrowedAmount is atleast minimum loan debt
+      require(borrowedAmount >= 100_00, "Invalid borrowedAmount, needs to be at least minimumDebt");
+
+      // Read latest oracle price from pricecontract state
+      bytes4 oraclePriceBytes = tx.inputs[1].nftCommitment.slice(5,9);
+      int oraclePrice = int(oraclePriceBytes);
+
+      // Calculate maximum borrow amount
+      int collateral = tx.outputs[2].value;
+      // Collateral has to be 10% greater than maxBorrowBase
+      int maxBorrowBase = ((collateral * 10) / 11);
+      int maxBorrow = maxBorrowBase * oraclePrice / 100_000_000;
+      require(borrowedAmount <= maxBorrow, "Invalid borrow amount, exceeds maxBorrow");
+
+      // Validate startingInterest input & require it to be non-negative
+      require(startingInterest.length == 2);
+      require(int(startingInterest) >= 0);
+
+      // Validate interestManagerConfiguration input
+      // byte interestManager, bytes2 minRateManager bytes2 maxRateManager
+      require(interestManagerConfiguration.length == 5);
+
+      // Read periodParity from parity state
+      bytes parityCommitment = tx.inputs[0].nftCommitment;
+      // Semantic typecast so concatenation for loanCommitment can be typed as bytes27
+      bytes4 periodParityBytes = bytes4(parityCommitment);
+
+      // Construct loanCommitment
+      bytes27 loanCommitment = 0x01 + bytes6(borrowedAmount) + bytes6(0) + 0x00 + periodParityBytes + startingInterest + startingInterest + interestManagerConfiguration;
+
+      // Create loancontract output at outputIndex 2
+      // Output holds the BCH collateral + a Parity mutable NFT storing the loan state
+      require(tx.outputs[2].tokenCategory == parityTokenId + 0x01, "Invalid Loancontract output - should have same tokenCategory");
+      require(tx.outputs[2].nftCommitment == loanCommitment, "Invalid Loancontract output - should have correct nftCommitment");
+      require(tx.outputs[2].tokenAmount == 0, "Invalid Loancontract output - should not have fungible tokens");
+      require(tx.outputs[2].lockingBytecode == loanLockingScript, "Invalid Loancontract output - should have correct lockingBytecode");
+
+      // Create loanTokenSidecar output at outputIndex 3
+      require(tx.outputs[3].tokenCategory == loanKeyTokenId);
+      require(tx.outputs[3].nftCommitment == 0x01);
+      require(tx.outputs[3].tokenAmount == 0);
+      require(tx.outputs[3].lockingBytecode == loanTokensidecarLockingScript);
+      require(tx.outputs[3].value == 1000);
+
+      // Calculate borrowing fee (0.25% of the borrowed amount, paid in BCH)
+      int borrowedAmountBchValue = borrowedAmount * 100_000_000 / oraclePrice;
+      int borrowingFeeBch = borrowedAmountBchValue * 25 / 10_000;
+      int borrowedAmountBchClamped = max(borrowingFeeBch, 1000);
+
+      // Create borrowingFee output at outputIndex 4
+      require(tx.outputs[4].value == borrowedAmountBchClamped);
+      require(tx.outputs[4].lockingBytecode == borrowingFeeLockingScript);
+      require(tx.outputs[4].tokenCategory == 0x);
+
+      // Create loanKey output at outputIndex 5
+      require(tx.outputs[5].tokenCategory == loanKeyTokenId + 0x02);
+      require(tx.outputs[5].nftCommitment == 0x);
+      require(tx.outputs[5].tokenAmount == 0);
+      require(tx.outputs[5].value == 1000);
+
+      // Create borrowed tokens output at outputIndex 6
+      require(tx.outputs[6].tokenCategory == parityTokenId, "Invalid tokenoutput - should have same tokenCategory");
+      require(tx.outputs[6].tokenAmount == borrowedAmount);
+      require(tx.outputs[6].nftCommitment == 0x, "Invalid tokenoutput - should not have a non-zero nft commitment");
+      require(tx.outputs[6].value == 1000, "Invalid tokenoutput - needs to hold exactly 1000 sats");
+
+      // Allow for extra outputs (BCH change output, front-end fee output, interest manager delegation output, etc.)
+      // Disallow for additional outputs to hold Parity NFTs
+      if (tx.outputs.length > 7) {
+        bytes tokenCategoryOutput7 = tx.outputs[7].tokenCategory;
+        // If there is a tokenCategory on the output, it must not be the parityTokenId
+        if(tokenCategoryOutput7 != 0x) require(tokenCategoryOutput7.split(32)[0] != parityTokenId);
+      }
+      if (tx.outputs.length > 8) {
+        bytes tokenCategoryOutput8 = tx.outputs[8].tokenCategory;
+        if(tokenCategoryOutput8 != 0x) require(tokenCategoryOutput8.split(32)[0] != parityTokenId);
+      }
+       if (tx.outputs.length > 9) {
+        bytes tokenCategoryOutput9 = tx.outputs[9].tokenCategory;
+        if(tokenCategoryOutput9 != 0x) require(tokenCategoryOutput9.split(32)[0] != parityTokenId);
+      }
+      // Restrict maximum outputs to 10 total to protect minting capability
+      require(tx.outputs.length <= 10);
+    }
+      // function updatePeriodState
+      // Update the Parity contract period state based on tx locktime
+      //
+      // Inputs: 00-parity, 01-feeBch
+      // Outputs: 00-parity, 01?-BchChange
+
+    function updatePeriodState() {
+      require(this.activeInputIndex == 0, "Parity contract must always be at input index 0");
+
+      // Read currentPeriod from parity state
+      bytes parityCommitment = tx.inputs[0].nftCommitment;
+      int currentPeriod = int(parityCommitment);
+
+      // Check if locktime is set correctly
+      // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
+      require(tx.locktime < 500_000_000);
+
+      // Locktime should be in new period
+      int startingHeightCurrentPeriod = startBlockHeight + currentPeriod * periodLengthBlocks;
+      int startingHeightNewPeriod = startingHeightCurrentPeriod + periodLengthBlocks;
+      require(tx.locktime >= startingHeightNewPeriod, "Locktime should be in new period");
+
+      // construct new period state
+      int newPeriodParity = (tx.locktime - startBlockHeight) / periodLengthBlocks;
+      bytes4 periodParityBytes = bytes4(newPeriodParity);
+
+      // Recreate contract at outputIndex0 exactly
+      require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Recreate contract at output0 - invalid lockingBytecode");
+      require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory, "Recreate contract at output0 - invalid tokenCategory");
+      require(tx.outputs[0].value == 1000, "Recreate contract at output0 - needs to hold exactly 1000 sats");
+      require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount, "Recreate contract at output0 - invalid tokenAmount");
+      require(tx.outputs[0].nftCommitment == periodParityBytes);
+
+      // Allow for extra BCH change output, disallow for additional output to hold any tokens
+      if (tx.outputs.length > 1) {
+        require(tx.outputs[1].tokenCategory == 0x, "Invalid BCH change output - should not hold any tokens");
+      }
+      
+      // Restrict maximum outputs to 2 total to protect minting capability
+      require(tx.outputs.length <= 2);
+  }
+}

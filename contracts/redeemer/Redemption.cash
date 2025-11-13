@@ -1,0 +1,164 @@
+pragma cashscript ^0.12.0;
+
+// Individual redemption contract, processes an ongoing redemption against a target loan
+// Always tied to a redemptionStateSidecar and a redemptionTokenSidecar
+// Either the redemptions finalizes against the target loan or the redemption target gets swapped for a lower interest loan
+// The target loan + redemptionAmount of the redemption is kept in a mutable NFT on the redemption itself
+// The payout address (redeemerPkh) and redemptionPrice are stored in the redemptionStateSidecar as an immutable NFT
+
+/*  --- State redemption Mutable NFT ---
+    bytes32 targetLoanTokenId
+    bytes6 redemptionAmount (tokens)
+*/
+
+/*  --- State redemptionSidecar Immutable NFT ---
+    bytes20 redeemerPkh
+    bytes4 redemptionPrice
+*/
+
+contract Redemption(
+    bytes32 parityTokenId
+  ) {
+      // function finalizeRedemption
+      // Completes the redemption against the target loan, redeems ParityUSD tokens for BCH collateral
+      // Any redemption still pending when a newer period starts can be cancelled
+      // The redemption pays for the transaction fees (normally no external fee input required).
+      //
+      // Inputs: 00-loan, 01-loanTokenSidecar, 02-loanFunction, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, ?06-feeBch
+      // Outputs: 00-loan, 01-loanTokenSidecar, 02-loanFunction, 03-opreturn, 04-payoutRedemption, 05?-tokenChangeOutput, ?06-BchChange
+    function finalizeRedemption(){
+      // Require redemption to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+
+      // Authenticate Loan at inputIndex 0
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x01);
+
+      // Authenticate redeem loanFunction at inputIndex 2
+      require(tx.inputs[2].tokenCategory == parityTokenId);
+      require(tx.inputs[2].nftCommitment == 0x03);
+
+      // Authenticate redemptionStateSidecar at inputIndex 4
+      require(tx.inputs[4].outpointTransactionHash == tx.inputs[3].outpointTransactionHash);
+      require(tx.inputs[4].outpointIndex == tx.inputs[3].outpointIndex + 1);
+
+      // Authenticate redemptionTokenSidecar at inputIndex 5
+      require(tx.inputs[5].outpointTransactionHash == tx.inputs[3].outpointTransactionHash);
+      require(tx.inputs[5].outpointIndex == tx.inputs[3].outpointIndex + 2);
+
+      // Specific logic for redemption or cancellation is enforced in the redeem loan function
+      // The redeem loan function enforces the final redemption amount to be burned to an opreturn at output index 3
+      // The redemption enforces the redemptionPayout and tokenChangeOutput are correct
+
+      // Calculate new redemption payout amount, clamp to minimum 1000 sats
+      // The redeem loan function calculates the new loan collateral, which we can read through introspection
+      int redeemedCollateral = tx.inputs[0].value - tx.outputs[0].value;
+      int redeemedCollateralClamped = max(redeemedCollateral, 1000);
+
+      // Read state from redemptionStateSidecar
+      bytes20 redeemerPkh = tx.inputs[4].nftCommitment.split(20)[0];
+
+      // Create redemptionPayout at output index 4
+      bytes25 redeemerLockingBytecode = new LockingBytecodeP2PKH(redeemerPkh);
+      require(tx.outputs[4].lockingBytecode == redeemerLockingBytecode);
+      require(tx.outputs[4].value == redeemedCollateralClamped);
+      require(tx.outputs[4].tokenCategory == 0x);
+
+      // For the effective redemption amount, the output values enforced by the redeem loan function are used
+      int originalRedemptionAmount = tx.inputs[5].tokenAmount; 
+      int effectiveRedemptionAmount = tx.outputs[3].tokenAmount;
+      // Check if token change output is needed
+      int tokenChangeAmount = originalRedemptionAmount - effectiveRedemptionAmount;
+      if(tokenChangeAmount > 0){
+        // Create tokenChangeOutput at output index 5
+        require(tx.outputs[5].value == 1000);
+        require(tx.outputs[5].lockingBytecode == redeemerLockingBytecode);
+        require(tx.outputs[5].tokenCategory == parityTokenId);
+        require(tx.outputs[5].tokenAmount == tokenChangeAmount);
+      } else {
+        // If no token change, optionally allow output index 5 for BCH change but prevent holding tokens
+        if(tx.outputs.length > 5){
+          require(tx.outputs[5].tokenCategory == 0x, "Invalid BCH output - should not hold any tokens");
+        }
+        // No seventh output should be present if there is no token change for the redemption
+        require(tx.outputs.length <= 6);
+      }
+
+      // Optionally allow output index 6 for BCH change but prevent holding tokens
+      if(tx.outputs.length > 6){
+        require(tx.outputs[6].tokenCategory == 0x, "Invalid BCH output - should not hold any tokens");
+      }
+
+      // Restrict maximum outputs to 7 total not to recreate redemption outputs
+      require(tx.outputs.length <= 7);
+    }
+      // function swapTargetLoan
+      // Swaps the original target loan with a compatible one with a lower interest rate.
+      // The redemption can pay for the transaction fees of one redemption-swap (normally no external fee input required).
+      //
+      // Inputs: 00-loan, 01-loanTokenSidecar, 02-swapOutRedemption, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, 06-loanLowerInterest, 07-loanTokenSidecar, 08-swapInRedemption, ?09-feeBch
+      // Outputs: 00-loan, 01-loanTokenSidecar, 02-swapOutRedemption, 03-redemption, 04-redemptionStateSidecar, 05-redemptionTokenSidecar, 06-loanLowerInterest, 07-loanTokenSidecar, 08-swapInRedemption, ?09-changeBch
+    function swapTargetLoan(){
+      // Require redemption to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+
+      // Authenticate Loan at inputIndex 0
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x01);
+
+      // Authenticate swapOutRedemeption loanFunction at inputIndex 2
+      require(tx.inputs[2].tokenCategory == parityTokenId);
+      require(tx.inputs[2].nftCommitment == 0x06);
+
+      // Authenticate redemptionStateSidecar at inputIndex 4
+      require(tx.inputs[4].outpointTransactionHash == tx.inputs[3].outpointTransactionHash);
+      require(tx.inputs[4].outpointIndex == tx.inputs[3].outpointIndex + 1);
+
+      // Authenticate redemptionTokenSidecar at inputIndex 5
+      require(tx.inputs[5].tokenCategory == parityTokenId);
+      require(tx.inputs[5].outpointTransactionHash == tx.inputs[3].outpointTransactionHash);
+      require(tx.inputs[5].outpointIndex == tx.inputs[3].outpointIndex + 2);
+
+      // Authenticate Loan at inputIndex 6
+      require(tx.inputs[6].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[6].nftCommitment.split(1)[0] == 0x01);
+
+      // Parse swappedIn loan state
+      bytes swappedInLoanCommitment = tx.inputs[6].nftCommitment;
+      bytes6 swappedInLoanCommitmentSlice = swappedInLoanCommitment.slice(14,20);
+      bytes4 swappedInlastPeriodInterestPaidBytes, bytes2 swappedInCurrentInterestBytes = swappedInLoanCommitmentSlice.split(4);
+      int swappedInCurrentInterest = int(swappedInCurrentInterestBytes);
+
+      // Parse swappedOut loan state
+      bytes swappedOutLoanCommitment = tx.inputs[0].nftCommitment;
+      bytes6 swappedOutLoanCommitmentSlice = swappedOutLoanCommitment.slice(14,20);
+      bytes4 swappedOutlastPeriodInterestPaidBytes, bytes2 swappedOutCurrentInterestBytes = swappedOutLoanCommitmentSlice.split(4);
+      int swappedOutCurrentInterest = int(swappedOutCurrentInterestBytes);
+
+      // Check swappedOut pays higher interest
+      require(swappedInCurrentInterest < swappedOutCurrentInterest);
+
+      // Check that both loan lastPeriodInterestPaid stats is equal (and thus are in the same period)
+      require(swappedInlastPeriodInterestPaidBytes == swappedOutlastPeriodInterestPaidBytes);
+
+      // Recreate redemption contract at output index 3
+      require(tx.outputs[3].lockingBytecode == tx.inputs[3].lockingBytecode);
+      require(tx.outputs[3].tokenCategory == tx.inputs[3].tokenCategory);
+      require(tx.outputs[3].value == 1000);
+      // Logic for updating redemption state is enforced in the swapInRedemption contract function
+
+      // Replicate state sidecar at output index 4
+      require(tx.outputs[4].value == 1000);
+      require(tx.outputs[4].lockingBytecode == tx.inputs[4].lockingBytecode);
+      require(tx.outputs[4].tokenCategory == tx.inputs[4].tokenCategory);
+      require(tx.outputs[4].nftCommitment == tx.inputs[4].nftCommitment);
+
+      // Replicate tokensidecar at output index 5
+      require(tx.outputs[5].value == 1000);
+      require(tx.outputs[5].lockingBytecode == tx.inputs[5].lockingBytecode);
+      require(tx.outputs[5].tokenCategory == tx.inputs[5].tokenCategory);
+      require(tx.outputs[5].tokenAmount == tx.inputs[5].tokenAmount);
+
+      // Logic for updating loan state is enforced in the loan contract function
+    }
+}

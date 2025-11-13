@@ -1,0 +1,23 @@
+pragma cashscript ^0.12.0;
+
+// LoanKeyOriginProof, sidecar contract which holds the proof that the loanKey was created by the LoanKeyFactory.
+
+/*  --- Immutable NFT ---
+    no state (0x)
+*/
+
+contract LoanKeyOriginProof() {
+    // function attach
+    // Ties together the LoanKeyOriginProof with the LoanKeyOriginEnforcer
+    //
+    // Inputs: 00-parity, 01-pricecontract, 02-LoanKeyOriginEnforcer, 03-LoanKeyOriginProof, 04-BchCollateral
+
+  function attach() {
+    // Enforce LoanKeyOriginProof at inputIndex 3
+    require(this.activeInputIndex == 3);
+
+    // Authenticate inputIndex 2 to be the LoanKeyOriginEnforcer
+    require(tx.inputs[2].outpointTransactionHash == tx.inputs[3].outpointTransactionHash);
+    require(tx.inputs[2].outpointIndex == tx.inputs[3].outpointIndex - 1);
+  }
+}

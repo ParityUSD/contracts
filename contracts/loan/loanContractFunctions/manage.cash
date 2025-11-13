@@ -1,0 +1,135 @@
+pragma cashscript ^0.12.0;
+
+// Manage loan contract function
+// Is used to repay debt, add collateral, remove collateral, and change the loan's interestManagerConfiguration
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x02
+*/
+
+// for partial repayments:
+// minimumDebt = 100.00 ParityUSD
+// minimumRepay = 100.00 ParityUSD
+
+// Note: This function can only withdraw collateral if there are no ongoing redemptions against the loan
+
+contract manageLoan(
+  ) {
+      // function manage
+      // Allows loankey holder to repay tokens, add collateral, remove collateral, and change the interestManagerConfiguration.
+      //
+      // Inputs: 00-pricecontract, 01-loan, 02-loanTokenSidecar, 03-manageLoan, 04-loanKey, 05-userBch, ?06-repayTokens
+      // Outputs: 00-pricecontract, 01-loan, 02-loanTokenSidecar, 03-manageLoan, 04-loanKey, ?05-opreturn, ??-changeTokens, ??-changeBch
+      //      or: 00-pricecontract, 01-manageLoan, 02-opreturn, ??-changeTokens, ??-changeBch
+
+    function manage(
+      int repayAmount,
+      // Note: the bytes length of function arguments are not automatically enforced
+      bytes5 interestManagerConfiguration
+    ){
+      // Require function to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+
+      // Authenticate PriceContract at inputIndex 0
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+      // Authenticate Loan at inputIndex 1, nftCommitment checked later
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+
+      // Check loanTokenId from tokensidecar at inputIndex2
+      bytes loanTokenId = tx.inputs[2].tokenCategory;
+
+      // Check loanTokenId provided at inputIndex4 to be the loanKey
+      require(tx.inputs[4].tokenCategory == loanTokenId + 0x02);
+
+      // Parse loan state
+      bytes loanState = tx.inputs[1].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemedBytes = remainingPartLoanState.split(6)[0];
+
+      // Calculate outstandingBorrowAmount because only the debt not being redeemed against can be repaid
+      int borrowedAmount = int(borrowedAmountBytes);
+      int amountBeingRedeemed = int(amountBeingRedeemedBytes);
+      int outstandingBorrowAmount = borrowedAmount - amountBeingRedeemed;
+      bool noRepayment = repayAmount == 0;
+      bool isFullRepayment = repayAmount == outstandingBorrowAmount;
+      // Check range repayAmount if non-zero: minimum treshold OR full isFullRepayment (if less than minimum)
+      require(noRepayment || repayAmount >= 100_00 || isFullRepayment, "RepayAmount loan needs to be in valid range");
+      // RepayAmount should not exceed outstandingBorrowAmount
+      require(repayAmount <= outstandingBorrowAmount);
+
+      // Read latest price from PriceContract contract
+      bytes4 oraclePriceBytes = tx.inputs[0].nftCommitment.slice(5,9);
+      int oraclePrice = int(oraclePriceBytes);
+
+      // Validate input interestManagerConfiguration
+      require(interestManagerConfiguration.length == 5);
+
+      // Assign index for the function nft output
+      int functionNftOutputIndex = 1;
+
+      // Loan can only be closed on full repayment AND no pending redemptions
+      bool closeLoan = isFullRepayment && amountBeingRedeemed == 0;
+
+      // Check whether to recreate the loan contract
+      if(!closeLoan){
+        // If the loan is not closed, the loan contract has to be recreated at output index 1
+        // The ManageLoan function contract is then re-created at output index 3
+        functionNftOutputIndex = 3;
+
+        // Check newBorrowAmount is greater than minimumDebt
+        int newBorrowAmount = borrowedAmount - repayAmount;
+        require(newBorrowAmount >= 100_00, "Invalid newBorrowAmount, needs to greater than minimumDebt");
+
+        // Calculate minimum collateral
+        int newCollateral = tx.outputs[1].value;
+        // Collateral has to be 10% greater than maxBorrowBase
+        int maxBorrowBase = ((newCollateral * 10) / 11);
+        int maxBorrow = maxBorrowBase * oraclePrice / 100_000_000;
+        require(newBorrowAmount <= maxBorrow, "Invalid newBorrowAmount, collateral ratio would get too low");
+
+        // If redemptions are ongoing, collateral cannot be withdrawn
+        if(amountBeingRedeemed > 0){
+          int collateral = tx.inputs[1].value;
+          require(newCollateral >= collateral, "Cannot withdraw collateral during redemptions");
+        }
+
+        // Update BorrowAmount & interestManagerConfiguration
+        bytes15 fixedPartLoanState = remainingPartLoanState.split(15)[0];
+        bytes27 newLoanCommitment = 0x01 + bytes6(newBorrowAmount) + fixedPartLoanState + interestManagerConfiguration;
+        
+        // Recreate loan contract with new state
+        require(tx.outputs[1].lockingBytecode == tx.inputs[1].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
+        require(tx.outputs[1].tokenCategory == tx.inputs[1].tokenCategory, "Recreate loan contract - invalid tokenCategory");
+        require(tx.outputs[1].nftCommitment == newLoanCommitment, "Invalid state loan contract - wrong nftCommitment");
+        require(tx.outputs[1].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
+
+        // Recreate loanKey to user
+        require(tx.outputs[4].lockingBytecode == tx.inputs[4].lockingBytecode, "Recreate loanKey - invalid lockingBytecode");
+        require(tx.outputs[4].tokenCategory == tx.inputs[4].tokenCategory, "Recreate loanKey - invalid tokenCategory");
+        require(tx.outputs[4].nftCommitment == tx.inputs[4].nftCommitment, "Recreate loanKey - invalid nftCommitment");
+        require(tx.outputs[4].value == tx.inputs[4].value, "Recreate loanKey - invalid value");
+      }
+
+      // Recreate ManageLoan functionContract at output at index 1 or 3
+      require(tx.outputs[functionNftOutputIndex].lockingBytecode == tx.inputs[3].lockingBytecode);
+      require(tx.outputs[functionNftOutputIndex].nftCommitment == tx.inputs[3].nftCommitment);
+      require(tx.outputs[functionNftOutputIndex].tokenCategory == tx.inputs[3].tokenCategory);
+      require(tx.outputs[functionNftOutputIndex].value == 1000);
+      require(tx.outputs[functionNftOutputIndex].tokenAmount == 0);
+
+      if(repayAmount > 0){
+        // Burn repaid ParityUSD by sending to unspendable opreturn output at index 5
+        int opreturnOutputIndex = 5;
+        // If the loan is closed, the opreturn output is at index 2
+        if(closeLoan) opreturnOutputIndex = 2;
+        require(tx.outputs[opreturnOutputIndex].tokenCategory == parityTokenId);
+        require(tx.outputs[opreturnOutputIndex].tokenAmount == repayAmount);
+        require(tx.outputs[opreturnOutputIndex].lockingBytecode == new LockingBytecodeNullData([0x]));
+      }
+    }
+}

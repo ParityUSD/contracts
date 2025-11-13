@@ -1,0 +1,81 @@
+pragma cashscript ^0.12.0;
+
+// StartRedemption loan contract function
+// Is used by a redemption to start the redemption process, attempting to redeem ParityUSD tokens for BCH collateral from loan
+
+/*  --- State Immutable NFT ---
+    byte identifier == 0x04
+*/
+
+// for partial redemptions:
+// minimumRedeemAmount = 100.00 ParityUSD
+
+// Note: The minimumLoanDebtForSwapOut of 100.00 ParityUSD means that any loan with debt below this minimum
+// can always be redeemed even if it is not the lowest interest loan. This is to clean up tiny loans.
+// Loan debt below the minimum of 100.00 ParityUSD can happen if a redemption repays just short of the full loan debt
+
+contract startRedemption(
+  bytes32 redeemerTokenId
+  ) {
+      // function startRedemption
+      // Redemption started against loan, update loan state to reflect the ongoing amount being redeemed
+      //
+      // Inputs: 00-PriceContract, 01-Loan, 02-loanTokenSidecar, 03-startRedemption, 04-redeemer, 05-Parity-tokens, 06-feeBch
+      // Outputs: 00-PriceContract, 01-Loan, 02-loanTokenSidecar, 03-startRedemption, 04-redeemer, 05-redemption, 06-redemptionStateSidecar, 07-redemptionTokenSidecar, ??-changeTokens, ??-changeBch
+
+    function startRedemption(){
+      // Require startRedemption function to be at inputIndex 3
+      require(this.activeInputIndex == 3);
+      bytes parityTokenId = tx.inputs[this.activeInputIndex].tokenCategory;
+
+      // Authenticate PriceContract at inputIndex 0
+      require(tx.inputs[0].tokenCategory == parityTokenId + 0x01);
+      require(tx.inputs[0].nftCommitment.split(1)[0] == 0x00);
+
+      // Authenticate Loan at inputIndex 1, nftCommitment checked later
+      require(tx.inputs[1].tokenCategory == parityTokenId + 0x01);
+
+      // Authenticate redeemer at inputIndex 4
+      require(tx.inputs[4].tokenCategory == redeemerTokenId + 0x02);
+
+      // Parse loan state
+      bytes loanCommitment = tx.inputs[1].nftCommitment;
+      bytes7 firstPartLoanState, bytes remainingPartLoanState = loanCommitment.split(7);
+      byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
+      require(identifier == 0x01);
+      bytes6 amountBeingRedeemedBytes, bytes lastPartLoanState = remainingPartLoanState.split(6);
+
+      // Calculate outstandingBorrowAmount
+      int borrowedAmount = int(borrowedAmountBytes);
+      int amountBeingRedeemed = int(amountBeingRedeemedBytes);
+      int outstandingBorrowAmount = borrowedAmount - amountBeingRedeemed;
+      
+      // Read redemptionAmount from redemption state (not from loan state)
+      bytes redemptionAmountBytes = tx.outputs[5].nftCommitment.split(32)[1];
+      int redemptionAmount = int(redemptionAmountBytes);
+
+      // Check range redemptionAmount: minimum treshold OR full isFullRedemption (if less than minimum)
+      bool isFullRedemption = redemptionAmount == outstandingBorrowAmount;
+      require(redemptionAmount >= 100_00 || isFullRedemption, "redemptionAmount loan needs to be in valid range");
+      // Calculate and check newAmountBeingRedeemed
+      int newAmountBeingRedeemed = amountBeingRedeemed + redemptionAmount;
+      require(newAmountBeingRedeemed <= borrowedAmount);
+
+      // Construct new loan state
+      bytes27 newLoanCommitment = firstPartLoanState + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
+
+      // Recreate loan contract at output index 1
+      require(tx.outputs[1].nftCommitment == newLoanCommitment, "Invalid state loan contract - wrong nftCommitment");
+      require(tx.outputs[1].lockingBytecode == tx.inputs[1].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
+      require(tx.outputs[1].value == tx.inputs[1].value, "Recreate loan contract with same BCH amount");
+      require(tx.outputs[1].tokenCategory == tx.inputs[1].tokenCategory, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[1].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
+
+      // Recreate startRedemption functionContract at output index 3
+      require(tx.outputs[3].lockingBytecode == tx.inputs[3].lockingBytecode);
+      require(tx.outputs[3].nftCommitment == tx.inputs[3].nftCommitment);
+      require(tx.outputs[3].tokenCategory == tx.inputs[3].tokenCategory);
+      require(tx.outputs[3].value == 1000);
+      require(tx.outputs[3].tokenAmount == 0);
+    }
+}
