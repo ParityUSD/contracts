@@ -51,16 +51,22 @@ contract manageLoan(
       require(identifier == 0x01);
       bytes6 amountBeingRedeemedBytes = remainingPartLoanState.split(6)[0];
 
-      // Calculate outstandingBorrowAmount because only the debt not being redeemed against can be repaid
+      // Convert bytes to int for follow-up calculations
       int borrowedAmount = int(borrowedAmountBytes);
       int amountBeingRedeemed = int(amountBeingRedeemedBytes);
-      int outstandingBorrowAmount = borrowedAmount - amountBeingRedeemed;
+
+      // Calculate redeemableDebt because only the debt not being redeemed against can be repaid
+      int redeemableDebt = borrowedAmount - amountBeingRedeemed;
+      
+      // Create noRepayment and isFullRepayment booleans
       bool noRepayment = repayAmount == 0;
-      bool isFullRepayment = repayAmount == outstandingBorrowAmount;
-      // Check range repayAmount if non-zero: minimum treshold OR full isFullRepayment (if less than minimum)
-      require(noRepayment || repayAmount >= 100_00 || isFullRepayment, "RepayAmount loan needs to be in valid range");
-      // RepayAmount should not exceed outstandingBorrowAmount
-      require(repayAmount <= outstandingBorrowAmount);
+      bool isFullRepaymentOfRedeemableDebt = repayAmount == redeemableDebt;
+
+      // Check repayAmount is either zero, the minimum treshold OR full isFullRepayment (if less than minimum)
+      require(noRepayment || repayAmount >= 100_00 || isFullRepaymentOfRedeemableDebt, "RepayAmount loan needs to be in valid range");
+      
+      // RepayAmount should not exceed redeemableDebt
+      require(repayAmount <= redeemableDebt);
 
       // Read latest price from PriceContract contract
       bytes4 oraclePriceBytes = tx.inputs[0].nftCommitment.slice(5,9);
@@ -73,7 +79,7 @@ contract manageLoan(
       int functionNftOutputIndex = 1;
 
       // Loan can only be closed on full repayment AND no pending redemptions
-      bool closeLoan = isFullRepayment && amountBeingRedeemed == 0;
+      bool closeLoan = isFullRepaymentOfRedeemableDebt && amountBeingRedeemed == 0;
 
       // Check whether to recreate the loan contract
       if(!closeLoan){

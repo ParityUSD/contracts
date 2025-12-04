@@ -33,7 +33,7 @@ contract swapOutRedemption(
       bytes7 firstPartLoanState, bytes remainingPartLoanState = loanState.split(7);
       byte identifier, bytes6 borrowedAmountBytes = firstPartLoanState.split(1);
       require(identifier == 0x01);
-      bytes6 amountBeingRedeemed, bytes lastPartLoanState = remainingPartLoanState.split(6);
+      bytes6 amountBeingRedeemedBytes, bytes lastPartLoanState = remainingPartLoanState.split(6);
 
       // Loan can only be swapped out if the current loan meets minimum debt threshold
       // Check minimumLoanDebtForSwapOut
@@ -42,15 +42,19 @@ contract swapOutRedemption(
       // Authenticate redemption
       require(tx.inputs[3].tokenCategory == redemptionTokenId + 0x01);
 
+      // The interest rate comparison for swapRedemption happens in the Redemption contract
+
       // Parse redemption state
       bytes32 targetLoan, bytes redemptionAmountBytes = tx.inputs[3].nftCommitment.split(32);
 
       // Require target loan to match tokenId
       require(tx.inputs[1].tokenCategory == targetLoan);
 
+      // Deduct redemption amount from amountBeingRedeemed because loan is being swapped out
+      int newAmountBeingRedeemed = int(amountBeingRedeemedBytes) - int(redemptionAmountBytes);
+
       // Construct new loan state
-      int newRedemptionAmount = int(amountBeingRedeemed) - int(redemptionAmountBytes);
-      bytes27 newLoanState = firstPartLoanState + bytes6(newRedemptionAmount) + bytes14(lastPartLoanState);
+      bytes27 newLoanState = firstPartLoanState + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
 
       // Recreate loan contract with new state at outputIndex 0
       require(tx.outputs[0].nftCommitment == newLoanState, "Invalid state loan contract - wrong nftCommitment");

@@ -14,7 +14,7 @@ contract liquidateLoan(
   bytes32 stabilityPoolTokenId
   ) {
       // function liquidate
-      // During loan liquidation requires that loan is under the required collateral amount and the outstanding borrowed amount is repayed
+      // During loan liquidation requires that loan is under the required collateral amount and there's no pending redemptions
       // StabilityPool pays for the transaction fees (normally no external fee input required).
       //
       // Inputs: 00-PriceContract, 01-loan, 02-loanTokenSidecar, 03-LoanLiquidate, 04-stabilityPool, 05-stabilityPoolSidecar, 06-liquidateLoan, ?07-feeBch

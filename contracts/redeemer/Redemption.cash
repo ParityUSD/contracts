@@ -64,11 +64,16 @@ contract Redemption(
       require(tx.outputs[4].value == redeemedCollateralClamped);
       require(tx.outputs[4].tokenCategory == 0x);
 
-      // For the effective redemption amount, the output values enforced by the redeem loan function are used
+      // The original redemption amount is read from the token sidecar at index 5 (not from the redemption state)
       int originalRedemptionAmount = tx.inputs[5].tokenAmount; 
-      int effectiveRedemptionAmount = tx.outputs[3].tokenAmount;
+      // The finalized redemption amount is read from the opreturn output at index 3
+      // The output tokenAmount is enforced by the redeem loan function (called redemptionAmountToFinalize)
+      int finalizedRedemptionAmount = tx.outputs[3].tokenAmount;
+
+      // Calculate token change amount to send back to redeemer
+      int tokenChangeAmount = originalRedemptionAmount - finalizedRedemptionAmount;
+
       // Check if token change output is needed
-      int tokenChangeAmount = originalRedemptionAmount - effectiveRedemptionAmount;
       if(tokenChangeAmount > 0){
         // Create tokenChangeOutput at output index 5
         require(tx.outputs[5].value == 1000);

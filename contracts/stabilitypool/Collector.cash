@@ -5,7 +5,7 @@ pragma cashscript ^0.12.0;
 
 // Collector state does not mutate, instead the mutable capability is used to distinguish from StabilityPool receipts
 /*  --- State Mutable NFT ---
-    bytes4 period
+    bytes4 periodCollector
 */
 
 contract Collector(
@@ -54,7 +54,7 @@ contract Collector(
   // StabilityPool pays for the transaction fees if possible (normally no external fee input required).
   //
   // Inputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-NewPeriodPool, 03-collector, ?04-feeBch
-  // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-NewPeriodPool, 03-newPayout, 04-newCollector, 05-protocolFee, ?06-BchChange 
+  // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-NewPeriodPool, 03-newCollector, 04-protocolFee, 05?-newPayout, ?06-BchChange
 
   function payToStabilityPool() {
     // Require function to be at inputIndex 3

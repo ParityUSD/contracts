@@ -6,10 +6,26 @@ pragma cashscript ^0.12.0;
 // PoolContractFunction are responsible for the contract logic updating the nft state and the BCH value
 
 /*  --- State StabilityPool Minting NFT ---
-    bytes4 period
+    bytes4 periodPool
     bytes6 totalStakedEpoch (tokens)
     bytes remainingStakedEpoch (tokens)
 */
+
+// totalStakedEpoch is the total amount of tokens staked in the pool for the whole epoch (so since the previous epoch change)
+// Withdrawals during the epoch are subtracted from totalStakedEpoch and new stakes during the epoch are ignored
+// remainingStakedEpoch = totalStakedEpoch - totalSpentInLiquidationsThisEpoch
+// So remainingStakedEpoch <= totalStakedEpoch
+// The remainingStakedEpoch / totalStakedEpoch ratio is used to perform pro-rata reduction of stakes for funds used in liquidations
+
+// The stabilitypool sidecar holds the remaining and newly added tokens that are not yet counted in totalStakedEpoch 
+// So sidecarHoldings = remainingStakedEpoch + newlyAddedStakes
+
+// Note:
+// - In LiquidateLoan, totalStakedEpoch remains the same, remainingStakedEpoch decreases.
+// - In WithdrawalFromPool, both totalStakedEpoch and remainingStakedEpoch decrease.
+// - In AddLiquidity, both totalStakedEpoch and remainingStakedEpoch remain the same, only the sidecar tokenAmount increases.
+// - In NewPeriodPool, totalStakedEpoch and remainingStakedEpoch are both set to the current staked amount in the sidecar
+//   This is because all tokens now count as staked for the new epoch and totalLiquidationThisEpoch is reset to zero.
 
 contract StabilityPool(
   ) {
@@ -27,9 +43,15 @@ contract StabilityPool(
       bytes commitmentNftFunction = tx.inputs[nftFunctionInputIndex].nftCommitment;
       require(commitmentNftFunction.length == 1);
 
-      // Replicate StabilityPool (same lockingBytecode & tokenCategory)
+      // Logic for stabilityPool outputIndex
+      // Normally the stabilityPool output index corresponds to stabilityPool utxo activeInputIndex
       int outputIndex = this.activeInputIndex;
-      if(commitmentNftFunction == 0x02) outputIndex = 2; // Special outputIndex for liquidateLoan function
+      // However for the liquidateLoan function the outputIndex gets overwritten to be at index 2
+      // This is because in liquidateLoan the loan and loan sidecar are at inputIndex 1 and 2 are not recreated in outputs
+      // Instead, the loan liquidate functionContract goes at outputIndex 1 and the stabilityPool goes at outputIndex 2
+      if(commitmentNftFunction == 0x02) outputIndex = 2;
+
+      // Replicate StabilityPool (same lockingBytecode & tokenCategory)
       require(tx.outputs[outputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
       require(tx.outputs[outputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);
     }

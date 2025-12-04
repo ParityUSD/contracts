@@ -87,7 +87,7 @@ contract payInterest(
       require(tx.outputs[1].nftCommitment == newLoanCommitment, "Recreate loan contract - wrong nftCommitment");
       require(tx.outputs[1].lockingBytecode == tx.inputs[1].lockingBytecode, "Recreate loan contract - invalid lockingBytecode");
       require(tx.outputs[1].tokenCategory == tx.inputs[1].tokenCategory, "Recreate loan contract - invalid tokenCategory");
-      require(tx.outputs[1].value == newCollateralAmount, "Recreate loan contract - invalid tokenCategory");
+      require(tx.outputs[1].value == newCollateralAmount, "Recreate loan contract - invalid value");
       require(tx.outputs[1].tokenAmount == 0, "Recreate loan contract - should have zero token amount");
 
       // Recreate functionContract at outputIndex3

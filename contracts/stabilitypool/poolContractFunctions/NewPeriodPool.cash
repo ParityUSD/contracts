@@ -2,7 +2,7 @@ pragma cashscript ^0.12.0;
 
 // NewPeriodPool pool contract function
 // Updates the StabilityPool to a new period and creates a new Collector contract
-// Every 10th period NewPeriodPool sends accumulated BCH to a new Payout contract
+// Every 10th period NewPeriodPool starts a new epoch and sends accumulated BCH to a new Payout contract
 
 /*  --- State Immutable NFT ---
     byte identifier == 0x03
@@ -30,18 +30,22 @@ contract NewPeriodPool(
       require(tx.inputs[0].tokenCategory == stabilityPoolTokenId + 0x02);
 
       // Parse stabilitypool state
-      bytes4 currentPeriodBytes, bytes remainingStabilityPoolState = tx.inputs[0].nftCommitment.split(4);
+      bytes4 currentPeriodPoolBytes, bytes remainingStabilityPoolState = tx.inputs[0].nftCommitment.split(4);
 
       // Authenticate collector contract at inputIndex 3 with mutable NFT
       require(tx.inputs[3].tokenCategory == stabilityPoolTokenId + 0x01);
-      require(tx.inputs[3].nftCommitment == currentPeriodBytes);
+      require(tx.inputs[3].nftCommitment == currentPeriodPoolBytes);
+
+      // Reading collected interest from collector input through introspection
       int totalCollectedInterest = tx.inputs[3].value;
+      // Calculate collected interest after protocol fee (30%)
+      // No need for clamping here as this value is not created as separate output amount but added to the stability pool balance
       int collectedInterestAfterFee = (7 * totalCollectedInterest) / 10;
 
       // Check if current blockheight is in new period
       // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
-      int currentPeriod = int(currentPeriodBytes);
-      int newPeriod = currentPeriod + 1;
+      int currentPeriodPool = int(currentPeriodPoolBytes);
+      int newPeriod = currentPeriodPool + 1;
       int blockHeightNewPeriod = startBlockHeight + newPeriod * periodLengthBlocks;
       require(tx.locktime >= blockHeightNewPeriod && tx.locktime < 500_000_000);
 
@@ -90,13 +94,18 @@ contract NewPeriodPool(
         require(tx.outputs[5].tokenCategory == tx.inputs[0].tokenCategory);
         int payoutAmount = newStabilityPoolBalance;
         require(tx.outputs[5].value == payoutAmount);
+        // nft commitment restriced below
 
-        // Construct and check state for payout contract
+        // parse extra state from stabilityPool
         bytes6 totalStakedEpochBytes, bytes remainingStakedEpochBytes = remainingStabilityPoolState.split(6);
-        int payoutAmountMinusDust = payoutAmount - 1000; 
+
+        // Calculate total payout amount minus dust as 'totalPayoutValue' for payout contract state
+        int payoutAmountMinusDust = payoutAmount - 1000;
+
+        // Construct state for payout contract
         // Encode variable length encoded remainingStakedEpochBytes as fixed bytes6 size
         bytes6 remainingStakedEpochBytes6 = bytes6(int(remainingStakedEpochBytes));
-        bytes payoutContractState = currentPeriodBytes + totalStakedEpochBytes + remainingStakedEpochBytes6 + bytes(payoutAmountMinusDust);
+        bytes payoutContractState = currentPeriodPoolBytes + totalStakedEpochBytes + remainingStakedEpochBytes6 + bytes(payoutAmountMinusDust);
         require(tx.outputs[5].nftCommitment == payoutContractState);
       } else {
         // Otherwise StabilityPool should be recreated with the new calculated balance

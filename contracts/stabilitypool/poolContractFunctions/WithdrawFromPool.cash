@@ -2,8 +2,9 @@ pragma cashscript ^0.12.0;
 
 // WithdrawFromPool pool contract function
 // Allows user to withdraw ParityUSD from the stabilityPool by returning their staking receipt NFT
-// The staking receipt should be of the current period to see the latest stake amount
-// This latest stake amount is updated by the Payout contract to account for any funds used in liquidations
+// To withdraw, the staking receipt should have a periodReceipt matching the current epoch
+// The periodReceipt and amountStakedReceipt are updated by the Payout contract and accounts for any funds used in liquidations
+// Users can choose to do a partial withdrawal, receiving a new receipt for the remaining stake
 
 /*  --- State Immutable NFT ---
     byte identifier == 0x04
@@ -11,7 +12,7 @@ pragma cashscript ^0.12.0;
 
 /*  --- State Receipts Immutable NFT ---
     bytes4 periodReceipt
-    bytes addedTokenAmount
+    bytes amountStakedReceipt (tokens)
 */
 
 // for partial withdrawals:
@@ -26,7 +27,7 @@ contract WithdrawFromPool(
     // Allows ParityUSD depositer to withdraw their tokens from the StabilityPool.
     //
     // Inputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-WithdrawFromPool, 03-userReceipt, 04-feeBch
-    // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-WithdrawFromPool, 03-newReceipt, 03/04-withdrawnTokens, ?04/05-changeBch
+    // Outputs: 00-StabilityPool, 01-stabilityPoolSidecar, 02-WithdrawFromPool, ?03-newReceipt, 03/04-withdrawnTokens, ?04/05-changeBch
 
     function withdraw(
       int amountWithdrawal
@@ -39,7 +40,7 @@ contract WithdrawFromPool(
       require(tx.inputs[0].tokenCategory == stabilityPoolTokenId + 0x02);
 
       // Parse stabilitypool state
-      bytes4 currentPeriodBytes, bytes remainingState = tx.inputs[0].nftCommitment.split(4);
+      bytes4 periodPoolBytes, bytes remainingState = tx.inputs[0].nftCommitment.split(4);
 
       // Authenticate staking receipt
       require(tx.inputs[3].tokenCategory == stabilityPoolTokenId, "Invalid receipt, should have correct tokenId");
@@ -48,7 +49,7 @@ contract WithdrawFromPool(
       bytes4 periodReceiptBytes, bytes amountStakedReceiptBytes = tx.inputs[3].nftCommitment.split(4);
 
       // Check period receipt, should be in the same staking epoch (10 periods) as currentPeriod
-      int currentPeriod = int(currentPeriodBytes);
+      int currentPeriod = int(periodPoolBytes);
       int periodReceipt = int(periodReceiptBytes);
       require(periodReceipt / 10 == currentPeriod / 10);
 
@@ -66,11 +67,15 @@ contract WithdrawFromPool(
       // Replicate StabilityPool value
       require(tx.outputs[0].value == tx.inputs[0].value, "Recreate contract at output0 - should have same BCH Balance");
       
+      // Parse remaining state of StabilityPool
+      bytes6 totalStakedEpochBytes, bytes remainingStakedEpochBytes = remainingState.split(6);
+
+      // Calculate new state for StabilityPool
+      int newTotalStakedEpoch = int(totalStakedEpochBytes) - amountWithdrawal;
+      int newRemainingStakedEpoch = int(remainingStakedEpochBytes) - amountWithdrawal;
+      
       // Change state StabilityPool
-      bytes6 totalStakedEpoch, bytes remainingStakedEpoch = remainingState.split(6);
-      int newTotalStakedEpoch = int(totalStakedEpoch) - amountWithdrawal;
-      int newRemainingStakedEpoch = int(remainingStakedEpoch) - amountWithdrawal;
-      bytes newStateStabilityPool = currentPeriodBytes + bytes6(newTotalStakedEpoch) + bytes(newRemainingStakedEpoch);
+      bytes newStateStabilityPool = periodPoolBytes + bytes6(newTotalStakedEpoch) + bytes(newRemainingStakedEpoch);
       require(tx.outputs[0].nftCommitment == newStateStabilityPool);
       
       // TokenSidecar recreated with reduced tokenAmount
@@ -97,7 +102,7 @@ contract WithdrawFromPool(
         
         // Issue receipt as fourth output
         require(tx.outputs[3].tokenCategory == stabilityPoolTokenId, "Invalid receipt, should have correct tokenId");
-        bytes newReceipt = currentPeriodBytes + bytes(newAmountStakedReceipt);
+        bytes newReceipt = periodPoolBytes + bytes(newAmountStakedReceipt);
         require(tx.outputs[3].nftCommitment == newReceipt, "Invalid receipt, should have correct nftCommitment");
         require(tx.outputs[3].value == 1000);
       }

@@ -1,41 +1,47 @@
 pragma cashscript ^0.12.0;
 
-// Contract to payout rewards stability pool
-// One Payout contract is created per epoch in (every 10th invocation of) the 'NewPeriodPool' function of the StabilityPool contract
+// Contract to payout rewards stability pool to stakers
+// One Payout contract is created per epoch in (every 10th invocation of) the 'NewPeriodPool' function of the StabilityPool
+// The Payout contract holds the total BCH earned by the Stability Pool in that epoch (interest + liquidation earnings)
+// Stakers receive pro-rata share earnings (interest + liquidation earnings) for that epoch based on their stake
+// When liquidations take place, all stakes are reduced proportionally for the amount of stability pool funds spent in liquidations
 
 /*  --- State Payout Minting NFT ---
     bytes4 period
     bytes6 totalStakedEpoch (tokens)
     bytes6 remainingStakedEpoch (tokens)
-    bytes totalClaimValue (BCH)
+    bytes totalPayoutValue (BCH)
 */
 
-/*  --- State Receipts Immutable NFT ---
-    bytes4 period
+// Note: totalPayoutValue ≈ sum(all userPayouts) (minus rounding dust)
+// because userPayoutAmount = totalValue × userStaked / totalStaked
+
+/*  --- State Staking Receipt Immutable NFT ---
+    bytes4 periodReceipt
     bytes amountStakedReceipt (tokens)
 */
 
 // Note: In practice the 'periodReceipt' state is only used to derive the corresponding epoch (periodReceipt / 10)
 
 contract Payout() {
-    // function claim
-    // Allows ParityUSD depositor to claim the portion of the interest they were entitled to in the period.
+    // function claimPayout
+    // Allows stakers to claim the portion of the interest and liquidation earning they are entitled to for the epoch.
     //
     // Inputs: 00-Payout, 01-userReceipt, ?02-feeBch
     // Outputs: 00-Payout, 01-newUserReceipt, 02-userBchPayout
 
-  function claim() {
+  function claimPayout() {
     // Require contract to be at inputIndex 0
     require(this.activeInputIndex == 0, "Payout contract must always be at input index 0");
 
     // Parse state Payout contract
     bytes4 periodPayoutBytes, bytes remainingState = tx.inputs[0].nftCommitment.split(4);
     bytes6 totalStakedEpochBytes, bytes remainingState2 = remainingState.split(6);
-    bytes6 remainingStakedEpochBytes, bytes totalClaimValueBytes = remainingState2.split(6);
+    bytes6 remainingStakedEpochBytes, bytes totalPayoutValueBytes = remainingState2.split(6);
 
     // Authenticate staking receipt
     bytes32 stabilityPoolTokenId = tx.inputs[0].tokenCategory.split(32)[0];
-    require(tx.inputs[1].tokenCategory == stabilityPoolTokenId, "Invalid claim receipt, should have correct tokenId");
+    require(tx.inputs[1].tokenCategory == stabilityPoolTokenId, "Invalid staking receipt, should have correct tokenId");
 
     // Parse state staking receipt
     bytes stateReceipt = tx.inputs[1].nftCommitment;
@@ -44,19 +50,23 @@ contract Payout() {
     // Check period receipt, should be in the same staking epoch (10 periods) as currentPeriod
     int periodPayout = int(periodPayoutBytes);
     int periodReceipt = int(periodReceiptBytes);
-    require(periodReceipt / 10 == periodPayout / 10, "Invalid claim receipt, should be from the correct period");
+    require(periodReceipt / 10 == periodPayout / 10, "Invalid staking receipt, should be from the correct period");
 
-    // Calculate user claim
-    int claimAmount = 0;
+    // Calculate user payout amount
+    int userPayoutAmount = 0;
     int totalStakedEpoch = int(totalStakedEpochBytes);
     int amountStakedReceipt = int(amountStakedReceiptBytes);
     // Prevent division by zero
     if(totalStakedEpoch != 0){
-      claimAmount= int(totalClaimValueBytes) * amountStakedReceipt / totalStakedEpoch;
+      // Pro-rata BCH payout: userShare = totalValue × userStaked / totalStaked
+      userPayoutAmount = int(totalPayoutValueBytes) * amountStakedReceipt / totalStakedEpoch;
     }
     
+    // Note that the Payout contract on creation is totalPayoutValue + 1000 sats
+    // This way the payout contract always has enough BCH to pay out all user payouts
+    int newAmountPayoutContract = tx.inputs[0].value - userPayoutAmount;
+    
     // Recreate Payout contract with lower bch amount at outputIndex 0
-    int newAmountPayoutContract = tx.inputs[0].value - claimAmount;
     require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory, "Recreate contract at output0 - invalid tokenCategory");
     require(tx.outputs[0].nftCommitment == tx.inputs[0].nftCommitment, "Recreate contract at output0 - invalid nftCommitment");
     require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Recreate contract at output0 - invalid lockingBytecode");
@@ -64,6 +74,8 @@ contract Payout() {
 
     // Construct new receipt state
     int remainingStakedEpoch = int(remainingStakedEpochBytes);
+    // Pro-rata reduction of stakes: newStake = oldStake × (remaining / total)
+    // This reduces user's stake proportionally to pool's funds spent in liquidations
     int newAmountStaked = amountStakedReceipt * remainingStakedEpoch / totalStakedEpoch;
     int newPeriodReceipt = periodPayout + 10;
     bytes newReceipt = bytes4(newPeriodReceipt) + bytes(newAmountStaked);

@@ -36,36 +36,41 @@ contract redeemLoan(
 
       // Read state from redemption
       bytes32 targetLoan, bytes redemptionAmountBytes = tx.inputs[3].nftCommitment.split(32);
-      int redemptionAmount = int(redemptionAmountBytes);
-      // Create a new variable which will be overwritten if the redemption is cancelled
-      // then the redemptionAmountToFinalize will be set to 0
-      int redemptionAmountToFinalize = redemptionAmount;
+      // The pendingRedemptionAmount is counted as part of the "amountBeingRedeemed" in the loan state
+      int pendingRedemptionAmount = int(redemptionAmountBytes);
+
+      // Normally the pending redemption amount becomes the effective redemption amount during finalization
+      // However, if the redemption is cancelled, the effective redemption amount is set to zero
+      // So the effective redemption amount gets overwritten if the redemption is cancelled (in isInNewPeriod block)
+      int effectiveRedemptionAmount = pendingRedemptionAmount;
 
       // Require target loan to match tokenid
       require(tx.inputs[1].tokenCategory == targetLoan);
 
       // Parse current period from loan contract
       bytes4 lastPeriodInterestPaidBytes = tx.inputs[0].nftCommitment.slice(14,18);
-      int currentPeriod = int(lastPeriodInterestPaidBytes);
+      int currentPeriodLoan = int(lastPeriodInterestPaidBytes);
 
-      // Requiring version 2 to be able to use relative timelocks (sequenceNumber)
+      // Require transaction version 2 to be able to use relative timelocks (sequenceNumber)
       require(tx.version == 2);
 
       // Check if the locktime is in a newer period than the current loan period
       // Any redemption still running when the new period starts can be cancelled
-      int newPeriod = currentPeriod + 1;
+      int newPeriod = currentPeriodLoan + 1;
       int blockHeightNewPeriod = startBlockHeight + newPeriod * periodLengthBlocks;
       // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
       bool isInNewPeriod = tx.locktime >= blockHeightNewPeriod && tx.locktime < 500_000_000;
 
-      // If a new period has started, allow to cancel the redemption
+      // If the redemption is in a new period, cancel the redemption
       if(isInNewPeriod){
-        redemptionAmountToFinalize = 0;
+        // Cancel the redemption by setting effectiveRedemptionAmount to 0
+        // In this case no collateral is redeemed from the loan and no debt is repaid
+        effectiveRedemptionAmount = 0;
       } else {
         // Otherwise, proceed with the normal finalization of the redemption
         // Enforce redemption timelock on redemption Utxo
-        int sequenceLoanInput = tx.inputs[3].sequenceNumber;
-        require(sequenceLoanInput == timelockRedemption);
+        int sequenceRedemptionInput = tx.inputs[3].sequenceNumber;
+        require(sequenceRedemptionInput == timelockRedemption);
       }
 
       // Read state from redemption sidecar
@@ -73,8 +78,8 @@ contract redeemLoan(
       int redemptionPrice = int(redemptionPriceBytes);
 
       // Calculate new loan collateral after redemption
-      // Use the redemptionAmountToFinalize which is 0 if the redemption is cancelled
-      int redeemedCollateral = redemptionAmountToFinalize * 100_000_000 / redemptionPrice;
+      // Use the effectiveRedemptionAmount which is 0 if the redemption is cancelled
+      int redeemedCollateral = effectiveRedemptionAmount * 100_000_000 / redemptionPrice;
       int newLoanCollateral = tx.inputs[0].value - redeemedCollateral;
 
       // Parse loan state, used to construct new loan commitment
@@ -84,9 +89,12 @@ contract redeemLoan(
       require(identifier == 0x01);
       bytes6 amountBeingRedeemed, bytes lastPartLoanState = remainingPartLoanState.split(6);
 
-      // Construct loan state after redemption (debt decreases, amountBeingRedeemed decreases)
-      int newAmountBeingRedeemed = int(amountBeingRedeemed) - redemptionAmount;
-      int newBorrowAmount = int(borrowedAmountBytes) - redemptionAmountToFinalize;
+      // Construct loan state after redemption (update debt and amountBeingRedeemed)
+      // the new state for amountBeingRedeemed is reduced by the pendingRedemptionAmount
+      int newAmountBeingRedeemed = int(amountBeingRedeemed) - pendingRedemptionAmount;
+      // the state for the new borrowedAmount is reduced by the effectiveRedemptionAmount
+      // thus if the redemption is cancelled, the borrowedAmount remains unchanged
+      int newBorrowAmount = int(borrowedAmountBytes) - effectiveRedemptionAmount;
       bytes27 newLoanCommitment = 0x01 + bytes6(newBorrowAmount) + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
 
       // Recreate loan contract with new state and new collateral amount at output index 0
@@ -105,9 +113,9 @@ contract redeemLoan(
 
       // Burn redeemed ParityUSD by sending to unspendable opreturn output at index 3
       require(tx.outputs[3].lockingBytecode == new LockingBytecodeNullData([0x]));
-      if(redemptionAmountToFinalize > 0){
+      if(effectiveRedemptionAmount > 0){
         require(tx.outputs[3].tokenCategory == parityTokenId);
-        require(tx.outputs[3].tokenAmount == redemptionAmountToFinalize);
+        require(tx.outputs[3].tokenAmount == effectiveRedemptionAmount);
       } else {
         require(tx.outputs[3].tokenCategory == 0x);
       }

@@ -7,9 +7,9 @@ pragma cashscript ^0.12.0;
     byte identifier == 0x01
 */
 
-/*  --- State Receipts Immutable NFT ---
+/*  --- State Staking Receipt Immutable NFT ---
     bytes4 periodReceipt
-    bytes addedTokenAmount
+    bytes amountStakedReceipt (tokens)
 */
 
 // minimumToStake = 100.00 ParityUSD
@@ -53,9 +53,10 @@ contract AddLiquidity(
       require(tx.outputs[2].value == 1000);
 
       // Parse stabilitypool state
-      bytes4 currentPeriod = tx.inputs[0].nftCommitment.split(4)[0];
+      bytes4 periodPoolBytes = tx.inputs[0].nftCommitment.split(4)[0];
+
       // Only allow withdrawals in the next staking epoch (10 periods per epoch)
-      int periodNextEpoch = int(currentPeriod) + 10;
+      int periodNextEpoch = int(periodPoolBytes) + 10;
 
       // Create Receipt output at outputIndex 3
       require(tx.outputs[3].tokenCategory == stabilityPoolTokenId, "Invalid receipt, should have correct tokenId");

@@ -9,6 +9,8 @@ pragma cashscript ^0.12.0;
 */
 
 // Note: swapInRedemption can only be performed against loans with status "0x02" (mature loan)
+// This is to prevent new loans being created just to be used as swap-in targets for existing redemptions
+// which could be used to cancel redemptions and in effect receive a free price-option (see docs for more info)
 
 contract swapInRedemption(
   bytes32 redemptionTokenId
@@ -50,27 +52,32 @@ contract swapInRedemption(
       // This prevents new loans from being created just to swap targets of existing redemptions
       require(loanStatus == 0x02, "swapInRedemption can only be performed against mature loans");
 
-      // Calculate outstanding debt available for redemptions
+      // The interest rate comparison for swapRedemption happens in the Redemption contract
+
+      // Calculate redeemableDebt available for new redemption
       int borrowedAmount = int(borrowedAmountBytes);
       int amountBeingRedeemed = int(amountBeingRedeemedBytes);
-      int outstandingBorrowAmount = borrowedAmount - amountBeingRedeemed;
+      int redeemableDebt = borrowedAmount - amountBeingRedeemed;
       // Check that swapIn loan is not fully being redeemed already
       // Implicitly also checks that loan debt is non-zero
-      require(outstandingBorrowAmount > 0);
+      require(redeemableDebt > 0);
 
       // Read original redemption amount from sidecar (not from state which is the current amount being redeemed)
       int originalRedemptionAmount = tx.inputs[5].tokenAmount;
-      // New redemption amount should be the either originalRedemptionAmount or the maximum amount that can be still be redeemed
-      int newRedemptionAmount = min(originalRedemptionAmount, outstandingBorrowAmount);
-      int newAmountBeingRedeemed = amountBeingRedeemed + newRedemptionAmount;
 
+      // New redemption amount should be the either originalRedemptionAmount or the maximum amount that can be still be redeemed
+      // We take the minimum of both values (to avoid over-redeeming the loan)
+      int newRedemptionAmount = min(originalRedemptionAmount, redeemableDebt);
+
+      // Add redemption amount to amountBeingRedeemed because loan is being swapped in
+      int newAmountBeingRedeemed = amountBeingRedeemed + newRedemptionAmount;
 
       // Update mutable redemption state at output index 3
       // Read swappedIn tokenId from loansidecar at inputIndex 7
-      bytes swapedInLoanTokenId = tx.inputs[7].tokenCategory;
+      bytes swappedInLoanTokenId = tx.inputs[7].tokenCategory;
       bytes6 newRedemptionAmountBytes = bytes6(newRedemptionAmount);
-      // Semantic typecast of 'swapedInLoanTokenId' so the concatenated result is bytes38
-      bytes38 newRedemptionState = bytes32(swapedInLoanTokenId) + newRedemptionAmountBytes;
+      // Semantic typecast of 'swappedInLoanTokenId' so the concatenated result is bytes38
+      bytes38 newRedemptionState = bytes32(swappedInLoanTokenId) + newRedemptionAmountBytes;
       require(tx.outputs[3].nftCommitment == newRedemptionState);
       // Logic for recreation of redemption contract is enforced in the redemption contract
 

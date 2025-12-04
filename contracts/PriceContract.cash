@@ -1,7 +1,7 @@
 pragma cashscript ^0.12.0;
 
 // Pricecontract keeps track of the latest BCH/USD price state and shares it with other contracts
-// The Pricecontract accepts signed priceinfo and validates it against the oracle's PublicKey
+// The Pricecontract accepts signed price info and validates it against the oracle's PublicKey
 // Additionally the pricecontract shares its state with other contracts
 // The Pricecontract can be migrated to updated contract code by a MigrationKey
 
@@ -9,7 +9,7 @@ pragma cashscript ^0.12.0;
     byte identifier == 0x00
     bytes4 sequence,
     bytes4 pricedata
-    (can be extended in the future)
+    (can be extended in the future with extra fields by migrating the pricecontracts)
 */
 
 contract PriceContract(
@@ -17,9 +17,9 @@ contract PriceContract(
   bytes32 tokenIdMigrationKey
   ) {
     // function updatePrice
-    // Trigger oracle sequence update to avoid letting borrowers spawn coins using old price data
+    // Update the pricecontract mutable NFT state with newer oracle price data
     //
-    // Inputs: 00-pricecontract, ?02-feeBch
+    // Inputs: 00-pricecontract, ?01-feeBch
     // Outputs: 00-pricecontract, ?01-changeBch
 
   function updatePrice(

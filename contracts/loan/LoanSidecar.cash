@@ -2,7 +2,7 @@ pragma cashscript ^0.12.0;
 
 // LoanSidecar carrying the loanTokenId by holding an NFT
 
-// The NFT indentifier isn't used anywhere, instead its tokenCategory is used to keep the loanTokenId
+// The NFT identifier isn't used anywhere, instead its tokenCategory is used to keep the loanTokenId
 /*  --- State Immutable NFT ---
   byte identifier == 0x01
 */
@@ -17,7 +17,7 @@ contract LoanTokenSidecar() {
     // Check if loan is recreated in outputs at loanInputIndex
     bool isLoanRecreated = tx.outputs[loanInputIndex].tokenCategory == tx.inputs[loanInputIndex].tokenCategory;
     if(isLoanRecreated){
-      // Recreate loanSidecar at corrresponding outputIndex
+      // Recreate loanSidecar at corresponding outputIndex
       require(tx.outputs[this.activeInputIndex].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
       require(tx.outputs[this.activeInputIndex].nftCommitment == tx.inputs[this.activeInputIndex].nftCommitment);
       require(tx.outputs[this.activeInputIndex].tokenCategory == tx.inputs[this.activeInputIndex].tokenCategory);

@@ -1,10 +1,12 @@
 pragma cashscript ^0.12.0;
 
-// Parity borrowing contract, letting users create loans and borrow at current exchange rate as provided by PriceContract
+// Parity borrowing contract, lets users create PUSD loans by putting up BCH collateral
+// The borrower receives the borrowed PUSD and a loanKey NFT to manage the loan
+// The maximum borrow amount and protocols fees use the current exchange rate as provided by the PriceContract
 
 // Holds Fungible Token supply
 /*  --- Minting NFT---
-  bytes4 period
+  bytes4 periodParity
 */
 
 // minimumDebt = 100.00 ParityUSD
@@ -97,10 +99,10 @@ contract Parity(
       // Calculate borrowing fee (0.25% of the borrowed amount, paid in BCH)
       int borrowedAmountBchValue = borrowedAmount * 100_000_000 / oraclePrice;
       int borrowingFeeBch = borrowedAmountBchValue * 25 / 10_000;
-      int borrowedAmountBchClamped = max(borrowingFeeBch, 1000);
+      int borrowingFeeBchClamped = max(borrowingFeeBch, 1000);
 
       // Create borrowingFee output at outputIndex 4
-      require(tx.outputs[4].value == borrowedAmountBchClamped);
+      require(tx.outputs[4].value == borrowingFeeBchClamped);
       require(tx.outputs[4].lockingBytecode == borrowingFeeLockingScript);
       require(tx.outputs[4].tokenCategory == 0x);
 
@@ -135,7 +137,7 @@ contract Parity(
       require(tx.outputs.length <= 10);
     }
       // function updatePeriodState
-      // Update the Parity contract period state based on tx locktime
+      // Update the Parity contract period state to a newer period based on tx locktime
       //
       // Inputs: 00-parity, 01-feeBch
       // Outputs: 00-parity, 01?-BchChange
@@ -145,27 +147,27 @@ contract Parity(
 
       // Read currentPeriod from parity state
       bytes parityCommitment = tx.inputs[0].nftCommitment;
-      int currentPeriod = int(parityCommitment);
+      int currentPeriodParity = int(parityCommitment);
 
       // Check if locktime is set correctly
       // We restrict locktime to below 500 million as values above are unix timestamps instead of block heights
       require(tx.locktime < 500_000_000);
 
       // Locktime should be in new period
-      int startingHeightCurrentPeriod = startBlockHeight + currentPeriod * periodLengthBlocks;
+      int startingHeightCurrentPeriod = startBlockHeight + currentPeriodParity * periodLengthBlocks;
       int startingHeightNewPeriod = startingHeightCurrentPeriod + periodLengthBlocks;
       require(tx.locktime >= startingHeightNewPeriod, "Locktime should be in new period");
 
       // construct new period state
       int newPeriodParity = (tx.locktime - startBlockHeight) / periodLengthBlocks;
-      bytes4 periodParityBytes = bytes4(newPeriodParity);
+      bytes4 newPeriodParityBytes = bytes4(newPeriodParity);
 
       // Recreate contract at outputIndex0 exactly
       require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode, "Recreate contract at output0 - invalid lockingBytecode");
       require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory, "Recreate contract at output0 - invalid tokenCategory");
       require(tx.outputs[0].value == 1000, "Recreate contract at output0 - needs to hold exactly 1000 sats");
       require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount, "Recreate contract at output0 - invalid tokenAmount");
-      require(tx.outputs[0].nftCommitment == periodParityBytes);
+      require(tx.outputs[0].nftCommitment == newPeriodParityBytes);
 
       // Allow for extra BCH change output, disallow for additional output to hold any tokens
       if (tx.outputs.length > 1) {

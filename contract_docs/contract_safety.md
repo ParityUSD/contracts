@@ -110,17 +110,14 @@ The redemption mechanism needs to make sure it does not commit to non-standard l
 
 ### Dust limit
 
-The `Payout` contract where stakers can claim their BCH staking rewards needs careful logic to handle interactions when the user staking rewards are minimal. The user still has to be able to interact with the `Payout` contract to update his receipt for a receipt of the next period (meaning the updated receipt has the old period +1).
+The `Payout` contract where stakers can claim their BCH staking rewards needs careful logic to handle interactions when the user staking rewards are minimal. The user still has to be able to interact with the `Payout` contract to update his receipt for a receipt of the next epoch (meaning the updated receipt has the old epoch +1).
 
 The contract does this by not requiring the user to create a payout output at all, it only restricts how the covenant itself is recreated:
 
 ```solidity
-    // Calculate user claim
-    int claimAmount = int(totalClaimValue) * int(amountStakedReceipt) / int(totalStakedPeriod);
-    
-    // Recreate contract with lower bch amount
-    int newPayoutAmount = tx.inputs[0].value - claimAmount;
-    require(tx.outputs[0].value == newPayoutAmount, "Recreate contract at output0 - invalid BCH amount");
+    // Note that the Payout contract on creation is totalPayoutValue + 1000 sats
+    // This way the payout contract always has enough BCH to pay out all user payouts
+    int newAmountPayoutContract = tx.inputs[0].value - userPayoutAmount;
 ```
 
 ## Validate Function Arguments

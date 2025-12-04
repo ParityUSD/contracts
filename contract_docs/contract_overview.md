@@ -30,12 +30,15 @@
   + [Free Option Problem](#free-option-problem)
   + [Solution for the Free Option Problem](#solution-for-the-free-option-problem)
 + [The PriceContract Mechanism](#the-pricecontract-mechanism)
+  + [PriceContract Migration](#pricecontract-migration)
 + [Timekeeping](#timekeeping)
 + [The Interest Management Mechanism](#the-interest-management-mechanism)
 + [The Use of Unique LoanTokenIds](#the-use-of-unique-loantokenids)
 + [Minimum Loan, Stake \& Redemption Sizes](#minimum-loan-stake--redemption-sizes)
 + [Contract Setup Parameters](#contract-setup-parameters)
 + [Parallelism](#parallelism)
++ [Transaction Fees](#transaction-fees)
++ [Trust In Transaction Building](#trust-in-transaction-building)
 
 ## High Level Design
 
@@ -265,9 +268,9 @@ A user may wish to redeem an amount which doesn't match the outstanding debt of 
 
 For example, if a user wants to redeem 250 PUSD and the loans in order of interest rate are:
 
-- Loan 1: 100 PUSD outstanding, interest rate 1%
-- Loan 2: 100 PUSD outstanding, interest rate 2%
-- Loan 3: 100 PUSD outstanding, interest rate 3%
+- Loan 1: 100 PUSD debt, interest rate 1%
+- Loan 2: 100 PUSD debt, interest rate 2%
+- Loan 3: 100 PUSD debt, interest rate 3%
 
 Loans 1 and 2 will be fully redeemed and loan 3 be partially redeemed leaving remaining debt of 50 after the redemption.
 
@@ -340,8 +343,21 @@ This way the redeemer does not anymore have the option to let his redemption com
 
 The PriceContract is coded to validate BCH/USD oracle priceMessages from the oracle run by General Protocols. Instead of using every 1-minute pricemesssage, the contract is coded to update its price state every 10 minutes (so every 10th message produced by the oracle). In addition to this general heartbeat, when the price changes more than 0.5% within this 10-minute interval, an additional price update is accepted to correct the contract's price state.
 
+### PriceContract Migration
+
 The PriceContract has a function `migrateContract` which enables a a migration key to change the contract bytecode of the PriceContract. This means that whereas the other contracts are immutable, the PriceContract can be upgraded or changed over time.
-Specifically this is indend for should problems with the hardcoded oracle occur or should something have to change about the update frequency.
+Specifically this is intended for should problems with the hardcoded oracle occur or should something have to change about the update frequency.
+
+Note that the `oracleMigrationKey` can also change the layout of the nftCommitment upon migration, specifically the price contract state can be extended:
+
+```solidity
+/*  --- State Mutable NFT ---
+    byte identifier == 0x00
+    bytes4 sequence,
+    bytes4 pricedata
+    (can be extended in the future with extra fields by migrating the pricecontracts)
+*/
+```
 
 ## Timekeeping
 
@@ -430,39 +446,61 @@ When setting up the ParityUSD contract system a few parameters need to be decide
 
 Further, there are some parameters which need to be decided upon setup but are not part of the `ParityDeployment` configuration.
 
-```ts
-const firstParityPeriod = 0n
-const numberDuplicateLoanKeyFactoryUtxos = 3 // stateless
-const numberDuplicateParityUtxos = 3 // statefull
-const numberDuplicatePriceContractUtxos = 1 // statefull
-const numberDuplicateLoanFunctionUtxos = 5 // stateless
-```
-
 The number of UTXOs created during contract setup is important for enabling parallelism, as we'll discuss in the next section.
 
 ## Parallelism
 
 Bitcoin Cash transactions can be validated in parallel because of local state, however each unconfirmed transaction chain still happens in sequence. This can become problematic when the same UTXO is being spent roughly simulaneously by different users. For ParityUSD to handle a very large number of users, we need to think about the probelem of UTXO congestion, to avoid so called 'race-conditions'.
 
-The specific number of UTXOs for each of these is decided during the parity-setup, so cannot be changed anymore after the launch.
+The specific number of UTXOs for each of these is decided during the parity-setup, so cannot be changed anymore after the initial contract deployment. There is no dynamic thread-spwning in the contract design.
 
 The parts of the system whic can have multiple UTXOs for each contract are the following:
-- The Borrowing Contract (statefull)
-- The Price contract (statefull)
-- The 8 Loan Function contracts (stateless)
-- The LoanKey Factory (stateless)
+- The Borrowing Contract
+- The Price contract
+- The 8 Loan Function contracts
+- The Redeemer contract
+- The LoanKey Factory
+
+
+We have tested and plan to launch with the following setup:
+
+```ts
+const config = {
+  numberDuplicateParityUtxos: 10, // statefull
+  numberDuplicatePriceContractUtxos: 5, // statefull
+  numberDuplicateLoanFunctionUtxos: 25, // stateless
+  numberDuplicateRedeemerContractUtxos: 25, // stateless
+  numberDuplicateLoanKeyFactoryUtxos: 5 // stateless
+}
+```
 
 Note which of these contracts is state-less versus state-full. For statefull contracts, it may become more difficult to keep state synchronized accross UTXOs when having many contract UTXOs. 
-
-For multiple 'Parity borrow UTXOs' this "state synchronization" should not be a problem as the `period` state is allowed to trail behind.
-However for price contract UTXOs it needs to be carefully considered how this might impact state synchronization.
 
 However there are also parts where there is only a single contract UTXO
 - a single StabilityPool UTXO
 - a single collector contract for each period
-- a single payout contract for each period
+- a single payout contract for each epoch
 
 These UTXOs present potential bottlenecks which could cause UTXO congestion, so it needs to be carefully considered what amount of interactions are expected with these UTXOs.
 
-Further, for both types of contracts, it should be considered whether they are vulnerable against DOS attacks, causing congestion intentionally.
+## Transaction Fees
 
+For user-initiated transactions the contract design is to have the users pay for their own fees.
+For transactions related to the operation of the system, the contract design is to let the contracts pay for their own fees whenever possible.
+
+Examples of this are 
+- `newPeriodPool` and `liquidatedLoan` for the stabilityPool
+- `swapRedemption` and `finalizeRedemption` for the redemptions
+- `payInterest` for loans
+
+These transaction fees are then hard-coded values based on the transaction size like `1500` or `2500` sats. Additional fees can always be added by adding a BCH input and corresponding change output. It is not possible to make the fees dynamic from inside the contract, as the contract cannot know the state of the mempool or fee market and thus cannot adjust fee rates by itself.
+
+The transactions where the operator always has to pay the fees is the `updatePrice` of the Price contract and `updatePeriodState` of the Parity Borrowing contract, as these contracts don't hold any BCH to spend.
+
+## Trust In Transaction Building
+
+The Parity contracts do not lock down the users inputs and outputs, this is to allow for flexibility with regards to UTXO selecton, HD wallet and to enable modular contract interactions.
+
+However currently using BCH WalletConnect the transaction building is happening on the Dapp-side, meaning that the dapp is responsible/trusted for filling in the correct user-address for flexible destinations. A malicious dapp could misdirect the users PUSD, loankey or BCH outputs to an address different from the user address.
+
+However, with advances in transaction building technology like Libauth Templates, CashConnect and XO Contract contract templates, this trusted element will be able to be resolved in the future by relying on a list of templates so the wallet can perform the transaction building, instead of relying on the Dapp for this.
