@@ -86,7 +86,7 @@ contract redeemLoan(
 
       // Construct loan state after redemption (debt decreases, amountBeingRedeemed decreases)
       int newAmountBeingRedeemed = int(amountBeingRedeemed) - redemptionAmount;
-      int newBorrowAmount = int(borrowedAmountBytes) - redemptionAmount;
+      int newBorrowAmount = int(borrowedAmountBytes) - redemptionAmountToFinalize;
       bytes27 newLoanCommitment = 0x01 + bytes6(newBorrowAmount) + bytes6(newAmountBeingRedeemed) + bytes14(lastPartLoanState);
 
       // Recreate loan contract with new state and new collateral amount at output index 0
